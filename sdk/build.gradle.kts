@@ -65,14 +65,14 @@ afterEvaluate {
         publications {
             create<MavenPublication>("release") {
                 from(components["release"])
-                groupId = "com.github.proxies-sx"
-                artifactId = "android-sdk"
+                groupId = "com.github.bolivian-peru"
+                artifactId = "android-peer-sdk"
                 version = "1.0.0"
 
                 pom {
                     name.set("Proxies.sx Peer SDK")
                     description.set("Android SDK for Proxies.sx peer proxy network - enables bandwidth sharing in Android apps")
-                    url.set("https://github.com/proxies-sx/android-sdk")
+                    url.set("https://github.com/bolivian-peru/android-peer-sdk")
 
                     licenses {
                         license {
@@ -90,9 +90,9 @@ afterEvaluate {
                     }
 
                     scm {
-                        connection.set("scm:git:github.com/proxies-sx/android-sdk.git")
-                        developerConnection.set("scm:git:ssh://github.com/proxies-sx/android-sdk.git")
-                        url.set("https://github.com/proxies-sx/android-sdk/tree/main")
+                        connection.set("scm:git:github.com/bolivian-peru/android-peer-sdk.git")
+                        developerConnection.set("scm:git:ssh://github.com/bolivian-peru/android-peer-sdk.git")
+                        url.set("https://github.com/bolivian-peru/android-peer-sdk/tree/main")
                     }
                 }
             }

@@ -1,6 +1,6 @@
 # Proxies.sx Peer SDK for Android
 
-[![](https://jitpack.io/v/proxies-sx/android-sdk.svg)](https://jitpack.io/#proxies-sx/android-sdk)
+[![](https://jitpack.io/v/bolivian-peru/android-peer-sdk.svg)](https://jitpack.io/#bolivian-peru/android-peer-sdk)
 
 Android SDK for integrating bandwidth sharing into your app. Users earn money by sharing their unused mobile bandwidth while you earn proxy credits.
 
@@ -38,7 +38,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.proxies-sx:android-sdk:1.0.0")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.0.0")
 }
 ```
 
@@ -46,7 +46,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.proxies-sx:android-sdk:1.0.0'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.0.0'
 }
 ```
 
@@ -240,7 +240,7 @@ If you use ProGuard/R8, the SDK includes consumer ProGuard rules automatically. 
 
 - Documentation: https://docs.proxies.sx/android-sdk
 - Email: sdk@proxies.sx
-- GitHub Issues: https://github.com/proxies-sx/android-sdk/issues
+- GitHub Issues: https://github.com/bolivian-peru/android-peer-sdk/issues
 
 ## License
 
