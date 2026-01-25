@@ -1,6 +1,9 @@
 # Proxies.sx Peer SDK for Android
 
 [![](https://jitpack.io/v/bolivian-peru/android-peer-sdk.svg)](https://jitpack.io/#bolivian-peru/android-peer-sdk)
+![Beta](https://img.shields.io/badge/status-beta-orange)
+
+> **⚠️ BETA:** This SDK is in beta testing. APIs may change before stable release.
 
 Android SDK for integrating bandwidth sharing into your app. Users earn money by sharing their unused mobile bandwidth while you earn proxy credits.
 
@@ -236,10 +239,13 @@ If you use ProGuard/R8, the SDK includes consumer ProGuard rules automatically. 
 - Mobile data connections are more valuable than WiFi
 - Peak hours have higher demand
 
+## Beta Notice
+
+**This SDK is currently in beta testing.** APIs and features may change before the stable release. Use in production at your own risk.
+
 ## Support
 
-- Documentation: https://docs.proxies.sx/android-sdk
-- Email: sdk@proxies.sx
+- Email: maya@proxies.sx
 - GitHub Issues: https://github.com/bolivian-peru/android-peer-sdk/issues
 
 ## License
