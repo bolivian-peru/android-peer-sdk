@@ -220,7 +220,7 @@ class ProxiesPeerSDK private constructor(
             "appVersion" to getAppVersion(),
             "country" to getCountryCode(),
             "carrier" to getCarrierName(),
-            "sdkVersion" to "1.0.0",
+            "sdkVersion" to "1.0.2",
             "apiKey" to apiKey,
             "userId" to config.userId
         )

@@ -279,7 +279,8 @@ class PeerProxyService : Service() {
             "ProxiesPeer::WakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire() // Acquire indefinitely while service runs
+            // Acquire for 24 hours max (will be released on service destroy)
+            acquire(24 * 60 * 60 * 1000L)
         }
     }
 
