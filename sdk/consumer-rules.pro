@@ -19,3 +19,7 @@
 # Keep Gson classes for JSON serialization
 -keep class com.google.gson.** { *; }
 -keepattributes *Annotation*
+
+# Keep NanoHTTPD classes for local proxy server
+-keep class fi.iki.elonen.** { *; }
+-dontwarn fi.iki.elonen.**

@@ -9,3 +9,6 @@
 
 # Keep Gson for JSON
 -keep class com.google.gson.** { *; }
+
+# Keep NanoHTTPD for local proxy
+-keep class fi.iki.elonen.** { *; }

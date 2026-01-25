@@ -8,6 +8,8 @@ import sx.proxies.peer.service.ProxyResponse
 /**
  * Local HTTP proxy server that runs on the device.
  * Used for SDK mode where the host app makes requests through localhost.
+ *
+ * SECURITY: Binds to localhost (127.0.0.1) only to prevent external access.
  */
 class LocalProxyServer(
     port: Int,
@@ -17,7 +19,7 @@ class LocalProxyServer(
         headers: Map<String, String>,
         body: ByteArray?
     ) -> ProxyResponse
-) : NanoHTTPD(port) {
+) : NanoHTTPD("127.0.0.1", port) {
 
     companion object {
         private const val TAG = "LocalProxyServer"

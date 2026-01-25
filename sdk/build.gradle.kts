@@ -70,7 +70,7 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "com.github.bolivian-peru"
                 artifactId = "android-peer-sdk"
-                version = "1.0.1"
+                version = "1.0.2"
 
                 pom {
                     name.set("Proxies.sx Peer SDK")
