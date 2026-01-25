@@ -50,6 +50,9 @@ dependencies {
     // JSON parsing
     implementation("com.google.code.gson:gson:2.10.1")
 
+    // NanoHTTPD for local proxy server
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+
     // WorkManager for background tasks
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
