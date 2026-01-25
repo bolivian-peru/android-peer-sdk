@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Cloud icon for bandwidth sharing -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,30c-8.28,0 -15,6.72 -15,15 0,0.34 0.02,0.67 0.05,1 -4.62,1.28 -8.05,5.47 -8.05,10.5 0,6.08 4.92,11 11,11h26c4.97,0 9,-4.03 9,-9 0,-4.78 -3.73,-8.67 -8.44,-8.97 -1.17,-6.06 -6.44,-10.53 -12.56,-10.53z"/>
+</vector>

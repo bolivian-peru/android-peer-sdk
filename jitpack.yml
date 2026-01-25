@@ -1,0 +1,14 @@
+# JitPack build configuration
+# https://jitpack.io/docs/BUILDING/
+
+# Use JDK 17 for Android builds
+jdk:
+  - openjdk17
+
+# Build commands
+install:
+  - ./gradlew :sdk:publishToMavenLocal
+
+# Before installation
+before_install:
+  - chmod +x gradlew
