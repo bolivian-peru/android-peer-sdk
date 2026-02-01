@@ -10,13 +10,14 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import sx.proxies.peer.ProxiesPeerSDK
 import sx.proxies.peer.R
 import sx.proxies.peer.network.RelayConnection
 import sx.proxies.peer.network.LocalProxyServer
 import sx.proxies.peer.ui.MainActivity
+import sx.proxies.peer.util.DebugLogger
 
 class PeerProxyService : Service() {
     companion object {
@@ -30,6 +31,7 @@ class PeerProxyService : Service() {
         const val EXTRA_RELAY_URL = "relay_url"
 
         fun start(context: Context, deviceToken: String, relayUrl: String) {
+            DebugLogger.d("Starting foreground service...")
             val intent = Intent(context, PeerProxyService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_DEVICE_TOKEN, deviceToken)
@@ -43,6 +45,7 @@ class PeerProxyService : Service() {
         }
 
         fun stop(context: Context) {
+            DebugLogger.d("Stopping foreground service...")
             val intent = Intent(context, PeerProxyService::class.java).apply {
                 action = ACTION_STOP
             }
@@ -61,15 +64,23 @@ class PeerProxyService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        DebugLogger.d("Service onCreate")
         createNotificationChannel()
         acquireWakeLock()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        DebugLogger.d("Service onStartCommand: ${intent?.action}")
         when (intent?.action) {
             ACTION_START -> {
-                val token = intent.getStringExtra(EXTRA_DEVICE_TOKEN) ?: return START_NOT_STICKY
-                val relayUrl = intent.getStringExtra(EXTRA_RELAY_URL) ?: return START_NOT_STICKY
+                val token = intent.getStringExtra(EXTRA_DEVICE_TOKEN)
+                val relayUrl = intent.getStringExtra(EXTRA_RELAY_URL)
+
+                if (token == null || relayUrl == null) {
+                    DebugLogger.e("Missing token or relay URL!")
+                    return START_NOT_STICKY
+                }
+
                 startProxy(token, relayUrl)
                 return START_STICKY
             }
@@ -85,7 +96,9 @@ class PeerProxyService : Service() {
     }
 
     private fun startProxy(token: String, relayUrl: String) {
-        Log.d(TAG, "Starting proxy service")
+        DebugLogger.i("Starting proxy service...")
+        DebugLogger.d("Token length: ${token.length}")
+        DebugLogger.d("Relay URL: $relayUrl")
 
         // Start foreground immediately
         startForeground(NOTIFICATION_ID, createNotification("Connecting..."))
@@ -94,17 +107,35 @@ class PeerProxyService : Service() {
             try {
                 // Initialize relay connection
                 relayConnection = RelayConnection(
+                    context = applicationContext,
                     relayUrl = relayUrl,
                     token = token,
                     onConnected = { deviceId ->
+                        DebugLogger.i("*** SERVICE onConnected CALLBACK FIRED ***")
+                        DebugLogger.i("Connected to relay! Device: $deviceId")
                         isConnected = true
                         updateNotification("Connected as $deviceId")
+                        // Update SDK status
+                        try {
+                            DebugLogger.i("Updating SDK status to CONNECTED...")
+                            ProxiesPeerSDK.getInstance().updateStatus(ProxiesPeerSDK.Status.CONNECTED)
+                            DebugLogger.i("SDK status updated successfully!")
+                        } catch (e: Exception) {
+                            DebugLogger.e("FAILED to update SDK status: ${e.message}", e)
+                        }
                         // Start local proxy server
                         startLocalProxy()
                     },
                     onDisconnected = {
+                        DebugLogger.w("Disconnected from relay")
                         isConnected = false
-                        updateNotification("Disconnected")
+                        updateNotification("Disconnected - Reconnecting...")
+                        // Update SDK status
+                        try {
+                            ProxiesPeerSDK.getInstance().updateStatus(ProxiesPeerSDK.Status.CONNECTING)
+                        } catch (e: Exception) {
+                            DebugLogger.w("Could not update SDK status: ${e.message}")
+                        }
                     },
                     onProxyRequest = { request ->
                         handleProxyRequest(request)
@@ -116,16 +147,22 @@ class PeerProxyService : Service() {
                     }
                 )
 
+                DebugLogger.i("Initiating WebSocket connection...")
                 relayConnection?.connect()
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to start proxy", e)
+                DebugLogger.e("Failed to start proxy", e)
                 updateNotification("Connection failed: ${e.message}")
+                try {
+                    ProxiesPeerSDK.getInstance().updateStatus(ProxiesPeerSDK.Status.ERROR)
+                } catch (ex: Exception) {
+                    // Ignore
+                }
             }
         }
     }
 
     private fun startLocalProxy() {
-        // Local HTTP proxy server that forwards to relay
+        DebugLogger.d("Starting local proxy server on port 8888...")
         localProxyServer = LocalProxyServer(
             port = 8888,
             onRequest = { method, url, headers, body ->
@@ -142,24 +179,23 @@ class PeerProxyService : Service() {
             }
         )
         localProxyServer?.start()
-        Log.d(TAG, "Local proxy server started on port 8888")
+        DebugLogger.i("Local proxy server started on port 8888")
     }
 
     private suspend fun handleProxyRequest(request: ProxyRequest): ProxyResponse {
         return withContext(Dispatchers.IO) {
             try {
-                // Execute HTTP request through device's network
+                DebugLogger.d("Handling proxy request: ${request.method} ${request.url}")
+
                 val connection = java.net.URL(request.url).openConnection() as java.net.HttpURLConnection
                 connection.requestMethod = request.method
                 connection.connectTimeout = 30000
                 connection.readTimeout = 30000
 
-                // Set headers
                 request.headers.forEach { (key, value) ->
                     connection.setRequestProperty(key, value)
                 }
 
-                // Send body if present
                 if (request.body != null && request.body.isNotEmpty()) {
                     connection.doOutput = true
                     connection.outputStream.use { os ->
@@ -167,7 +203,6 @@ class PeerProxyService : Service() {
                     }
                 }
 
-                // Read response
                 val responseCode = connection.responseCode
                 val responseHeaders = mutableMapOf<String, String>()
                 connection.headerFields.forEach { (key, values) ->
@@ -182,12 +217,13 @@ class PeerProxyService : Service() {
                     connection.errorStream?.use { it.readBytes() } ?: ByteArray(0)
                 }
 
-                // Track traffic (use actual byte count, not base64 length)
                 val requestBodyBytes = request.body?.let {
                     try { android.util.Base64.decode(it, android.util.Base64.DEFAULT).size } catch (e: Exception) { 0 }
                 } ?: 0
                 totalBytesIn += responseBody.size
                 totalBytesOut += requestBodyBytes
+
+                DebugLogger.d("Proxy response: $responseCode (${responseBody.size} bytes)")
 
                 ProxyResponse(
                     requestId = request.requestId,
@@ -196,7 +232,7 @@ class PeerProxyService : Service() {
                     body = android.util.Base64.encodeToString(responseBody, android.util.Base64.NO_WRAP)
                 )
             } catch (e: Exception) {
-                Log.e(TAG, "Proxy request failed: ${e.message}")
+                DebugLogger.e("Proxy request failed", e)
                 ProxyResponse(
                     requestId = request.requestId,
                     statusCode = 502,
@@ -211,7 +247,7 @@ class PeerProxyService : Service() {
     }
 
     private fun stopProxy() {
-        Log.d(TAG, "Stopping proxy service")
+        DebugLogger.i("Stopping proxy service...")
         relayConnection?.disconnect()
         relayConnection = null
         localProxyServer?.stop()
@@ -279,15 +315,16 @@ class PeerProxyService : Service() {
             "ProxiesPeer::WakeLock"
         ).apply {
             setReferenceCounted(false)
-            // Acquire for 24 hours max (will be released on service destroy)
             acquire(24 * 60 * 60 * 1000L)
         }
+        DebugLogger.d("WakeLock acquired (24h timeout)")
     }
 
     private fun releaseWakeLock() {
         wakeLock?.let {
             if (it.isHeld) {
                 it.release()
+                DebugLogger.d("WakeLock released")
             }
         }
         wakeLock = null
@@ -296,6 +333,7 @@ class PeerProxyService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        DebugLogger.d("Service onDestroy")
         stopProxy()
         releaseWakeLock()
         serviceScope.cancel()

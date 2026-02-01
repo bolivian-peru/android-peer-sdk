@@ -92,6 +92,7 @@ class PeerProxyService : Service() {
             try {
                 // Initialize relay connection
                 relayConnection = RelayConnection(
+                    context = applicationContext,
                     relayUrl = relayUrl,
                     token = token,
                     onConnected = { deviceId ->

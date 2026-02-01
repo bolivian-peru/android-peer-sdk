@@ -3,6 +3,7 @@ package sx.proxies.peer
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.*
+import kotlinx.coroutines.Job
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaType
@@ -89,6 +90,38 @@ class ProxiesPeerSDK private constructor(
         val todayTrafficMB: Double
     )
 
+    data class DetailedEarningsInfo(
+        val totalEarnedCents: Int,
+        val pendingPayoutCents: Int,
+        val totalPaidOutCents: Int,
+        val totalTrafficMB: Double,
+        val canRequestPayout: Boolean,
+        val minimumPayoutCents: Int,
+        val walletAddresses: WalletAddresses,
+        val payoutHistory: List<PayoutHistoryItem>
+    )
+
+    data class WalletAddresses(
+        val usdt: String?,
+        val btc: String?,
+        val sol: String?
+    )
+
+    data class PayoutHistoryItem(
+        val amount: Int,
+        val wallet: String,
+        val currency: String,
+        val txHash: String?,
+        val paidAt: String,
+        val notes: String?
+    )
+
+    data class PayoutRequestResult(
+        val success: Boolean,
+        val message: String,
+        val requestedAmount: Int?
+    )
+
     enum class Status {
         STOPPED,
         CONNECTING,
@@ -106,6 +139,10 @@ class ProxiesPeerSDK private constructor(
     private var deviceId: String? = null
     private var deviceToken: String? = null
     private var currentStatus = Status.STOPPED
+
+    // Earnings auto-polling
+    private var earningsPollingJob: Job? = null
+    private var isPollingEnabled = false
 
     private val prefs by lazy {
         context.getSharedPreferences("proxies_peer_sdk", Context.MODE_PRIVATE)
@@ -152,6 +189,9 @@ class ProxiesPeerSDK private constructor(
                 updateStatus(Status.ERROR)
             }
         }
+
+        // Start earnings auto-polling
+        startEarningsPolling()
     }
 
     /**
@@ -159,6 +199,11 @@ class ProxiesPeerSDK private constructor(
      */
     fun stop() {
         Log.d(TAG, "Stopping SDK")
+
+        // Stop earnings auto-polling
+        stopEarningsPolling()
+
+        // Stop foreground service
         PeerProxyService.stop(context)
         updateStatus(Status.STOPPED)
     }
@@ -178,7 +223,33 @@ class ProxiesPeerSDK private constructor(
     }
 
     /**
-     * Get earnings information.
+     * Manually refresh earnings immediately.
+     * Useful for pull-to-refresh or initial load.
+     */
+    fun refreshEarningsNow() {
+        scope.launch {
+            try {
+                val detailedEarnings = getDetailedEarnings()
+                val simpleEarnings = EarningsInfo(
+                    totalEarnedCents = detailedEarnings.totalEarnedCents,
+                    todayEarnedCents = 0,
+                    totalTrafficMB = detailedEarnings.totalTrafficMB,
+                    todayTrafficMB = 0.0
+                )
+
+                withContext(Dispatchers.Main) {
+                    config.onEarningsUpdate?.invoke(simpleEarnings)
+                }
+
+                Log.d(TAG, "Earnings manually refreshed: ${detailedEarnings.totalEarnedCents} cents")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh earnings: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Get earnings information (simple).
      */
     suspend fun getEarnings(): EarningsInfo {
         return withContext(Dispatchers.IO) {
@@ -208,6 +279,189 @@ class ProxiesPeerSDK private constructor(
                 EarningsInfo(0, 0, 0.0, 0.0)
             }
         }
+    }
+
+    /**
+     * Get detailed earnings information (with payout data).
+     */
+    suspend fun getDetailedEarnings(): DetailedEarningsInfo {
+        return withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder()
+                    .url("${config.apiUrl}/peer/devices/${deviceId}/earnings")
+                    .build()
+
+                val response = client.newCall(request).execute()
+                response.use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string()
+                        val json = gson.fromJson(body, JsonObject::class.java)
+
+                        val walletJson = json?.getAsJsonObject("walletAddresses")
+                        val wallets = WalletAddresses(
+                            usdt = walletJson?.get("usdt")?.asString,
+                            btc = walletJson?.get("btc")?.asString,
+                            sol = walletJson?.get("sol")?.asString
+                        )
+
+                        val historyArray = json?.getAsJsonArray("payoutHistory")
+                        val history = historyArray?.map { item ->
+                            val obj = item.asJsonObject
+                            PayoutHistoryItem(
+                                amount = obj.get("amount")?.asInt ?: 0,
+                                wallet = obj.get("wallet")?.asString ?: "",
+                                currency = obj.get("currency")?.asString ?: "",
+                                txHash = obj.get("txHash")?.asString,
+                                paidAt = obj.get("paidAt")?.asString ?: "",
+                                notes = obj.get("notes")?.asString
+                            )
+                        } ?: emptyList()
+
+                        DetailedEarningsInfo(
+                            totalEarnedCents = json?.get("totalEarnedCents")?.asInt ?: 0,
+                            pendingPayoutCents = json?.get("pendingPayoutCents")?.asInt ?: 0,
+                            totalPaidOutCents = json?.get("totalPaidOutCents")?.asInt ?: 0,
+                            totalTrafficMB = json?.get("totalTrafficMB")?.asDouble ?: 0.0,
+                            canRequestPayout = json?.get("canRequestPayout")?.asBoolean ?: false,
+                            minimumPayoutCents = json?.get("minimumPayoutCents")?.asInt ?: 1000,
+                            walletAddresses = wallets,
+                            payoutHistory = history
+                        )
+                    } else {
+                        DetailedEarningsInfo(0, 0, 0, 0.0, false, 1000, WalletAddresses(null, null, null), emptyList())
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get detailed earnings", e)
+                DetailedEarningsInfo(0, 0, 0, 0.0, false, 1000, WalletAddresses(null, null, null), emptyList())
+            }
+        }
+    }
+
+    /**
+     * Update wallet addresses for payouts.
+     */
+    suspend fun updateWallets(usdt: String?, btc: String?, sol: String?): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val wallets = mapOf(
+                    "usdt" to usdt,
+                    "btc" to btc,
+                    "sol" to sol
+                )
+                val json = gson.toJson(wallets)
+                val body = json.toRequestBody("application/json".toMediaType())
+
+                val request = Request.Builder()
+                    .url("${config.apiUrl}/peer/devices/${deviceId}/wallet")
+                    .put(body)
+                    .build()
+
+                val response = client.newCall(request).execute()
+                response.use { resp ->
+                    resp.isSuccessful
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to update wallets", e)
+                false
+            }
+        }
+    }
+
+    /**
+     * Request payout.
+     */
+    suspend fun requestPayout(currency: String): PayoutRequestResult {
+        return withContext(Dispatchers.IO) {
+            try {
+                val requestBody = mapOf("currency" to currency)
+                val json = gson.toJson(requestBody)
+                val body = json.toRequestBody("application/json".toMediaType())
+
+                val request = Request.Builder()
+                    .url("${config.apiUrl}/peer/devices/${deviceId}/request-payout")
+                    .post(body)
+                    .build()
+
+                val response = client.newCall(request).execute()
+                response.use { resp ->
+                    if (resp.isSuccessful) {
+                        val responseBody = resp.body?.string()
+                        val responseJson = gson.fromJson(responseBody, JsonObject::class.java)
+                        PayoutRequestResult(
+                            success = responseJson?.get("success")?.asBoolean ?: false,
+                            message = responseJson?.get("message")?.asString ?: "Unknown error",
+                            requestedAmount = responseJson?.get("requestedAmount")?.asInt
+                        )
+                    } else {
+                        PayoutRequestResult(false, "Request failed: ${resp.code}", null)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to request payout", e)
+                PayoutRequestResult(false, "Failed to request payout: ${e.message}", null)
+            }
+        }
+    }
+
+    /**
+     * Start automatic earnings polling (every 60 seconds).
+     * Polls the backend API and notifies listeners via callback.
+     */
+    private fun startEarningsPolling() {
+        if (isPollingEnabled) {
+            Log.d(TAG, "Earnings polling already running")
+            return
+        }
+
+        isPollingEnabled = true
+        earningsPollingJob?.cancel()
+
+        earningsPollingJob = scope.launch {
+            Log.d(TAG, "Starting earnings auto-polling (60s interval)")
+
+            while (isActive && isPollingEnabled) {
+                try {
+                    // Use detailed earnings for full payout info
+                    val detailedEarnings = getDetailedEarnings()
+
+                    // Convert to simple format for callback compatibility
+                    val simpleEarnings = EarningsInfo(
+                        totalEarnedCents = detailedEarnings.totalEarnedCents,
+                        todayEarnedCents = 0, // Not available in detailed endpoint
+                        totalTrafficMB = detailedEarnings.totalTrafficMB,
+                        todayTrafficMB = 0.0  // Not available in detailed endpoint
+                    )
+
+                    // Invoke callback on main thread if configured
+                    withContext(Dispatchers.Main) {
+                        config.onEarningsUpdate?.invoke(simpleEarnings)
+                    }
+
+                    Log.d(TAG, "Earnings updated: ${detailedEarnings.totalEarnedCents} cents, " +
+                               "${detailedEarnings.pendingPayoutCents} pending, " +
+                               "${detailedEarnings.totalTrafficMB} MB")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Earnings polling failed: ${e.message}")
+                    // Continue polling even on error
+                }
+
+                // Wait 60 seconds before next poll
+                delay(60_000)
+            }
+
+            Log.d(TAG, "Earnings auto-polling stopped")
+        }
+    }
+
+    /**
+     * Stop automatic earnings polling.
+     */
+    private fun stopEarningsPolling() {
+        isPollingEnabled = false
+        earningsPollingJob?.cancel()
+        earningsPollingJob = null
+        Log.d(TAG, "Earnings polling stopped")
     }
 
     private suspend fun registerDevice() {
