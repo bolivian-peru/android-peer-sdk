@@ -32,7 +32,7 @@ class RelayConnection(
     companion object {
         private const val TAG = "RelayConnection"
         private const val HEARTBEAT_INTERVAL = 30000L // 30 seconds
-        private const val RECONNECT_DELAY = 5000L // 5 seconds
+        // Old fixed delay replaced by exponential backoff in handleDisconnect()
     }
 
     private val client = OkHttpClient.Builder()
@@ -50,12 +50,20 @@ class RelayConnection(
 
     private var webSocket: WebSocket? = null
     private val gson = Gson()
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private var deviceId: String? = null
-    private var isConnected = false
-    private var shouldReconnect = true
+    @Volatile private var isConnected = false
+    @Volatile private var shouldReconnect = true
+    @Volatile private var isReconnecting = false
+    private var reconnectAttempt = 0
     private var publicIp: String = ""
+
+    companion object {
+        private const val RECONNECT_DELAY_BASE = 5000L  // 5 seconds
+        private const val RECONNECT_DELAY_MAX = 120000L  // 2 minutes max
+        private const val MAX_RECONNECT_ATTEMPTS = 50
+    }
 
     // Pending response callbacks
     private val pendingResponses = ConcurrentHashMap<String, CompletableDeferred<ProxyResponse>>()
@@ -64,6 +72,15 @@ class RelayConnection(
     private val activeTunnels = ConcurrentHashMap<String, Socket>()
 
     fun connect() {
+        // Recreate scope if it was cancelled by disconnect()
+        if (!scope.isActive) {
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        }
+        // Close any existing connection before reconnecting
+        webSocket?.close(1000, "Reconnecting")
+        webSocket = null
+        isReconnecting = false
+
         DebugLogger.d("Connecting to relay: ${relayUrl.take(30)}...")
 
         val request = Request.Builder()
@@ -75,6 +92,7 @@ class RelayConnection(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 DebugLogger.i("WebSocket connected!")
                 isConnected = true
+                reconnectAttempt = 0  // Reset on successful connection
 
                 // Fetch public IP first, then send device info
                 scope.launch {
@@ -479,20 +497,31 @@ class RelayConnection(
 
         onDisconnected()
 
-        if (shouldReconnect) {
+        if (shouldReconnect && !isReconnecting && reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
+            isReconnecting = true
+            reconnectAttempt++
+            // Exponential backoff: 5s, 10s, 20s, 40s... up to 2 minutes
+            val delay = minOf(RECONNECT_DELAY_BASE * (1L shl minOf(reconnectAttempt - 1, 5)), RECONNECT_DELAY_MAX)
+            DebugLogger.d("Reconnecting in ${delay/1000}s (attempt $reconnectAttempt/$MAX_RECONNECT_ATTEMPTS)...")
+
             scope.launch {
-                delay(RECONNECT_DELAY)
+                delay(delay)
                 if (shouldReconnect) {
-                    DebugLogger.d("Attempting to reconnect...")
                     connect()
+                } else {
+                    isReconnecting = false
                 }
             }
+        } else if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+            DebugLogger.w("Max reconnect attempts ($MAX_RECONNECT_ATTEMPTS) reached. Giving up.")
         }
     }
 
     fun disconnect() {
         shouldReconnect = false
         isConnected = false
+        isReconnecting = false
+        reconnectAttempt = 0
 
         // Close all active tunnels
         activeTunnels.keys.toList().forEach { closeTunnel(it) }

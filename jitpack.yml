@@ -5,9 +5,9 @@
 jdk:
   - openjdk17
 
-# Build commands
+# Only build the SDK module (skip :app to avoid timeout)
 install:
-  - ./gradlew :sdk:publishToMavenLocal
+  - ./gradlew :sdk:publishToMavenLocal -x :app:assemble -x :app:compileDebugKotlin -x :app:compileReleaseKotlin --no-daemon
 
 # Before installation
 before_install:
