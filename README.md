@@ -41,7 +41,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.1.1")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.1.2")
 }
 ```
 
@@ -49,7 +49,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.1.1'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.1.2'
 }
 ```
 
