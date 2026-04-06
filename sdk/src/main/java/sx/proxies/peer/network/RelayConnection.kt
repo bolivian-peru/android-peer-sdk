@@ -32,7 +32,9 @@ class RelayConnection(
     companion object {
         private const val TAG = "RelayConnection"
         private const val HEARTBEAT_INTERVAL = 30000L // 30 seconds
-        // Old fixed delay replaced by exponential backoff in handleDisconnect()
+        private const val RECONNECT_DELAY_BASE = 5000L  // 5 seconds
+        private const val RECONNECT_DELAY_MAX = 120000L  // 2 minutes max
+        private const val MAX_RECONNECT_ATTEMPTS = 50
     }
 
     private val client = OkHttpClient.Builder()
@@ -59,11 +61,6 @@ class RelayConnection(
     private var reconnectAttempt = 0
     private var publicIp: String = ""
 
-    companion object {
-        private const val RECONNECT_DELAY_BASE = 5000L  // 5 seconds
-        private const val RECONNECT_DELAY_MAX = 120000L  // 2 minutes max
-        private const val MAX_RECONNECT_ATTEMPTS = 50
-    }
 
     // Pending response callbacks
     private val pendingResponses = ConcurrentHashMap<String, CompletableDeferred<ProxyResponse>>()
