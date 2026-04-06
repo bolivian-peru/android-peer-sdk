@@ -64,11 +64,11 @@ class RelayConnection(
     private val activeTunnels = ConcurrentHashMap<String, Socket>()
 
     fun connect() {
-        val url = "$relayUrl?token=$token"
-        DebugLogger.d("Connecting to relay: $url")
+        DebugLogger.d("Connecting to relay: ${relayUrl.take(30)}...")
 
         val request = Request.Builder()
-            .url(url)
+            .url(relayUrl)
+            .header("Sec-WebSocket-Protocol", "token.$token")
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {

@@ -41,7 +41,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.0.2")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.1.0")
 }
 ```
 
@@ -49,7 +49,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.0.2'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.1.0'
 }
 ```
 
@@ -152,12 +152,15 @@ The SDK uses minimal resources and runs as a foreground service with a persisten
 
 ## Revenue Model
 
-| Party | Earnings per GB |
-|-------|-----------------|
-| User (device owner) | $0.50 |
-| Developer (you) | $0.10 |
+Earnings are tiered by IP type — mobile IPs earn the most:
 
-Payments are processed monthly. Minimum payout: $10.
+| IP Type | Rate Tier | Examples |
+|---------|-----------|---------|
+| **Mobile** | Highest | AT&T, Verizon, T-Mobile, Vodafone |
+| **Residential** | Mid | Comcast, Spectrum, Cox, BT |
+| **Datacenter** | Base | AWS, GCP, Azure, VPNs |
+
+IP type is classified server-side via ASN lookup. Earnings accumulate per-GB and are paid out monthly in USDC on Solana. Minimum payout: $5.
 
 ## SDK Methods
 
