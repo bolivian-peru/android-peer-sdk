@@ -1,11 +1,10 @@
 # Proxies.sx Peer SDK for Android
 
 [![](https://jitpack.io/v/bolivian-peru/android-peer-sdk.svg)](https://jitpack.io/#bolivian-peru/android-peer-sdk)
-![Beta](https://img.shields.io/badge/status-beta-orange)
-
-> **⚠️ BETA:** This SDK is in beta testing. APIs may change before stable release.
 
 Android SDK for integrating bandwidth sharing into your app. Users earn money by sharing their unused mobile bandwidth while you earn proxy credits.
+
+**The Android SDK is one of several ways to join the Peer Network.** See [Other Integration Paths](#other-integration-paths) below for Node.js, Docker, and Linux options.
 
 ## Installation
 
@@ -67,7 +66,7 @@ class MyApplication : Application() {
 
         ProxiesPeerSDK.init(
             context = this,
-            apiKey = "your-developer-api-key", // Get from dashboard
+            apiKey = "psx_your_api_key", // Get from farmer.proxies.sx > Account > API Keys
             config = ProxiesPeerSDK.Config(
                 userId = "optional-user-id", // Link to your user system
                 onStatusChange = { status ->
@@ -81,6 +80,8 @@ class MyApplication : Application() {
     }
 }
 ```
+
+The `apiKey` (format: `psx_...`) auto-links the device to your farmer account. Devices appear in your [farmer dashboard](https://farmer.proxies.sx/peers) immediately after connecting.
 
 ### 2. Start/Stop sharing
 
@@ -106,6 +107,49 @@ lifecycleScope.launch {
     println("Traffic shared: ${earnings.totalTrafficMB} MB")
 }
 ```
+
+## Dashboard & Marketplace
+
+Once your device is connected, manage it from the farmer dashboard:
+
+1. **farmer.proxies.sx/peers** — See all your devices, status, IP type, country, ISP, traffic, earnings
+2. **Toggle "Listed for Sale"** — List your device in the pool gateway so customers can route traffic through it
+3. **Automated verification** — System checks IP quality, ISP legitimacy, VPN/proxy detection, GeoIP match
+4. **Quality score** — Each device gets a 0-100 score; verified devices serve customer traffic and earn more
+5. **Live peer board** — See all peers at [agents.proxies.sx/peer/board/](https://agents.proxies.sx/peer/board/)
+
+### Verification requirements
+
+| Check | Requirement |
+|-------|------------|
+| IP Type | Must be residential or mobile |
+| ISP/ASN | Checked against datacenter and VPN databases |
+| GeoIP | Country must match claimed location |
+| Uptime | Minimum 1 hour online |
+| Quality | Score must be >= 50/100 |
+
+## IP Rotation
+
+The SDK supports IP rotation on non-rooted Android devices via the Accessibility Service.
+
+```kotlin
+// Check if rotation available
+if (sdk.isIPRotationAvailable()) {
+    sdk.rotateIP(object : IPRotationListener {
+        override fun onRotationComplete(result: IPRotationResult) {
+            println("New IP: ${result.newIp}")
+        }
+    })
+} else {
+    // Prompt user to enable accessibility service
+    sdk.openIPRotationSettings()
+}
+
+// Coroutine version
+val result = sdk.rotateIPAsync()
+```
+
+Rotation toggles airplane mode on/off (10s delay) to get a new carrier IP. Requires the "Proxies IP Rotation" accessibility service to be enabled in device settings. 60-second cooldown between rotations.
 
 ## Required Permissions
 
@@ -160,7 +204,7 @@ Earnings are tiered by IP type — mobile IPs earn the most:
 | **Residential** | Mid | Comcast, Spectrum, Cox, BT |
 | **Datacenter** | Base | AWS, GCP, Azure, VPNs |
 
-IP type is classified server-side via ASN lookup. Earnings accumulate per-GB and are paid out monthly in USDC on Solana. Minimum payout: $5.
+IP type is classified server-side via ASN lookup. Earnings accumulate per-GB and are paid out in USDC on Solana. Minimum payout: $5.
 
 ## SDK Methods
 
@@ -173,6 +217,10 @@ IP type is classified server-side via ASN lookup. Earnings accumulate per-GB and
 | `isRunning()` | Check if service is running |
 | `getStatus()` | Get current status enum |
 | `getEarnings()` | Get earnings (suspend function) |
+| `isIPRotationAvailable()` | Check if IP rotation is enabled |
+| `rotateIP(listener)` | Trigger IP rotation via airplane mode toggle |
+| `rotateIPAsync()` | Coroutine version of IP rotation |
+| `openIPRotationSettings()` | Open accessibility settings for user to enable rotation |
 
 ## Status Values
 
@@ -210,6 +258,49 @@ ProxiesPeerSDK.Config(
 )
 ```
 
+## Other Integration Paths
+
+The Android SDK is best for mobile apps. For other environments, use these alternatives:
+
+### Node.js / Linux / VPS
+
+Run a lightweight peer script on any machine with Node.js 18+:
+
+```bash
+# 1. Get your API key from farmer.proxies.sx > Account > API Keys
+
+# 2. Create peer.mjs and run it
+node peer.mjs
+```
+
+The script registers via `POST /v1/peer/agents/register` with your `apiKey`, connects to `wss://relay.proxies.sx`, and handles proxy requests. Full integration guide at [farmer.proxies.sx](https://farmer.proxies.sx) > Peers > SDK Integration tab.
+
+### Docker
+
+Run a peer node as a Docker container:
+
+```bash
+docker run -d --name proxies-peer \
+  -e DEVICE_NAME=my-docker-peer \
+  -e API_KEY=psx_your_key \
+  --restart unless-stopped \
+  node:18-slim node -e "$(curl -s https://agents.proxies.sx/peer/skill.md | ...)"
+```
+
+Or use the Node.js script in a Dockerfile. See the integration guide for the full peer.mjs script.
+
+### AI Agents (Claude, GPT, Custom)
+
+AI agents register programmatically:
+
+```bash
+curl -X POST https://api.proxies.sx/v1/peer/agents/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-agent","type":"claude","apiKey":"psx_your_key"}'
+```
+
+Full API reference: [agents.proxies.sx/peer/skill.md](https://agents.proxies.sx/peer/skill.md)
+
 ## Sample App
 
 See the `/app` module for a complete sample application demonstrating:
@@ -228,7 +319,7 @@ If you use ProGuard/R8, the SDK includes consumer ProGuard rules automatically. 
 ### "Relay connection failed"
 
 - Check internet connectivity
-- Verify API key is correct
+- Verify API key is correct (format: `psx_...`)
 - Check if VPN is blocking WebSocket connections
 
 ### Service stops unexpectedly
@@ -241,14 +332,27 @@ If you use ProGuard/R8, the SDK includes consumer ProGuard rules automatically. 
 - Earnings depend on traffic demand in user's region
 - Mobile data connections are more valuable than WiFi
 - Peak hours have higher demand
+- List your device for sale in the farmer dashboard to serve customer traffic
 
-## Beta Notice
+### Device not appearing in dashboard
 
-**This SDK is currently in beta testing.** APIs and features may change before the stable release. Use in production at your own risk.
+- Make sure you're using an API key (`psx_...`) from your farmer account
+- The `apiKey` in `init()` auto-links the device — without it, the device registers but isn't linked to your account
+
+## Links
+
+| Resource | URL |
+|----------|-----|
+| Farmer Dashboard | https://farmer.proxies.sx/peers |
+| Live Peer Board | https://agents.proxies.sx/peer/board/ |
+| AI Agent Skill File | https://agents.proxies.sx/peer/skill.md |
+| Peer Landing Page | https://agents.proxies.sx/peer/ |
+| API Docs (Swagger) | https://api.proxies.sx/docs/api |
+| MCP Server | https://www.npmjs.com/package/@proxies-sx/mcp-server |
 
 ## Support
 
-- Email: maya@proxies.sx
+- Telegram: https://t.me/proxyforai
 - GitHub Issues: https://github.com/bolivian-peru/android-peer-sdk/issues
 
 ## License
