@@ -6,6 +6,22 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 
 **The Android SDK is one of several ways to join the Peer Network.** See [Other Integration Paths](#other-integration-paths) below for Node.js, Docker, and Linux options.
 
+---
+
+> ## ⚠️ Minimum supported version: **v1.1.2**
+>
+> If you are integrating today, use `v1.1.2`. **Do not use v1.0.x** — those builds have a tunnel-forwarding regression (the SDK accepts CONNECTs but never forwards bytes), so every customer request times out and the device gets auto-demoted from customer routing within hours.
+>
+> The platform now **rejects registration from `v1.0.x` builds with HTTP 400** and an upgrade message — your app will fail to start until you bump the dependency. The fix is a 1-line gradle change:
+>
+> ```kotlin
+> implementation("com.github.bolivian-peru:android-peer-sdk:1.1.2")
+> ```
+>
+> Fix shipped in `v1.1.1` (commit [`afae66f2`](https://github.com/bolivian-peru/android-peer-sdk/commit/afae66f2)) — reconnection with exponential backoff + JitPack build fix. `v1.1.2` is the clean JitPack-cached build of v1.1.1 with no code changes.
+
+---
+
 ## Installation
 
 ### Step 1: Add JitPack repository
