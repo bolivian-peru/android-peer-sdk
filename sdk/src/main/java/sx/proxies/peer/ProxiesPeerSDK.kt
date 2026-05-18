@@ -41,6 +41,18 @@ class ProxiesPeerSDK private constructor(
 ) {
     companion object {
         private const val TAG = "ProxiesPeerSDK"
+        /**
+         * SDK version reported to the backend at registration.
+         *
+         * MUST be kept in sync with the gradle artifact version (sdk/build.gradle.kts).
+         * The backend gates fleet routing on this — when a known-bad SDK
+         * version ships, the backend can reject registration with an
+         * upgrade message. Stale string here = the gate can't distinguish
+         * a fixed install from a broken one. Bumped 2026-05-18 from
+         * "1.0.1" (hardcoded, never updated despite multiple releases)
+         * to track gradle artifact version.
+         */
+        private const val SDK_VERSION = "1.1.3"
         // Production URLs
         private const val DEFAULT_API_URL = "https://api.proxies.sx/v1"
         private const val DEFAULT_RELAY_URL = "wss://relay.proxies.sx"
@@ -474,7 +486,7 @@ class ProxiesPeerSDK private constructor(
             "appVersion" to getAppVersion(),
             "country" to getCountryCode(),
             "carrier" to getCarrierName(),
-            "sdkVersion" to "1.0.1",
+            "sdkVersion" to SDK_VERSION,
             "apiKey" to apiKey,
             "userId" to config.userId
         )
