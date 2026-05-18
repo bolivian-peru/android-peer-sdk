@@ -8,17 +8,20 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 
 ---
 
-> ## ⚠️ Minimum supported version: **v1.1.2**
+> ## ⚠️ Use **v1.1.3** (released 2026-05-18)
 >
-> If you are integrating today, use `v1.1.2`. **Do not use v1.0.x** — those builds have a tunnel-forwarding regression (the SDK accepts CONNECTs but never forwards bytes), so every customer request times out and the device gets auto-demoted from customer routing within hours.
+> If you are integrating today, use `v1.1.3`. Older versions have known issues:
 >
-> The platform now **rejects registration from `v1.0.x` builds with HTTP 400** and an upgrade message — your app will fail to start until you bump the dependency. The fix is a 1-line gradle change:
+> - **v1.0.x — tunnel-forwarding regression.** SDK accepts CONNECTs but never forwards bytes, so every customer request times out and the device auto-demotes from customer routing within hours. Fixed in v1.1.1.
+> - **v1.1.0 – v1.1.2 — stale `sdkVersion` string.** The internal version string was hardcoded `"1.0.1"` and never bumped, so devices on these versions report as v1.0 to the backend even though the tunnel-forwarding code is fixed. They work, but the platform can't distinguish them from broken v1.0 installs for routing decisions. v1.1.3 fixes this — `SDK_VERSION` is now a tracked constant that ships with each release.
+>
+> Bump to 1.1.3 with a 1-line gradle change:
 >
 > ```kotlin
-> implementation("com.github.bolivian-peru:android-peer-sdk:1.1.2")
+> implementation("com.github.bolivian-peru:android-peer-sdk:1.1.3")
 > ```
 >
-> Fix shipped in `v1.1.1` (commit [`afae66f2`](https://github.com/bolivian-peru/android-peer-sdk/commit/afae66f2)) — reconnection with exponential backoff + JitPack build fix. `v1.1.2` is the clean JitPack-cached build of v1.1.1 with no code changes.
+> Commit history: [`afae66f2`](https://github.com/bolivian-peru/android-peer-sdk/commit/afae66f2) (v1.1.1 — reconnection + tunnel fix), [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned).
 
 ---
 
@@ -56,7 +59,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.1.2")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.1.3")
 }
 ```
 
@@ -64,7 +67,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.1.2'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.1.3'
 }
 ```
 
