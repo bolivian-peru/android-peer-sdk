@@ -135,7 +135,6 @@ Once your device is connected, manage it from the farmer dashboard:
 2. **Toggle "Listed for Sale"** — List your device in the pool gateway so customers can route traffic through it
 3. **Automated verification** — System checks IP quality, ISP legitimacy, VPN/proxy detection, GeoIP match
 4. **Quality score** — Each device gets a 0-100 score; verified devices serve customer traffic and earn more
-5. **Live peer board** — See all peers at [agents.proxies.sx/peer/board/](https://agents.proxies.sx/peer/board/)
 
 ### Verification requirements
 
@@ -363,7 +362,6 @@ If you use ProGuard/R8, the SDK includes consumer ProGuard rules automatically. 
 | Resource | URL |
 |----------|-----|
 | Farmer Dashboard | https://farmer.proxies.sx/peers |
-| Live Peer Board | https://agents.proxies.sx/peer/board/ |
 | AI Agent Skill File | https://agents.proxies.sx/peer/skill.md |
 | Peer Landing Page | https://agents.proxies.sx/peer/ |
 | API Docs (Swagger) | https://api.proxies.sx/docs/api |
