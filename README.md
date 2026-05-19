@@ -196,6 +196,17 @@ AlertDialog.Builder(this)
 
 The SDK uses minimal resources and runs as a foreground service with a persistent notification. Users can see their sharing status at all times.
 
+## Privacy & IP Reputation (May 2026)
+
+Your device's exit IP and identifiers are **never publicly enumerable** through the Proxies.sx API. Specifically:
+
+- The previously-public `GET /v1/peer/board`, `/v1/peer/proxy/credentials`, `/v1/peer/proxy/devices`, `/v1/peer/stats/online`, and `relay.proxies.sx/health` endpoints have all been locked to admin-only authentication.
+- Customer-facing endpoints (`gw.proxies.sx:7000` / `:7001`, `/v1/gateway/pool/availability`) expose aggregate counts only — never per-device IPs or carriers.
+- Credentials persisted on your device are AES-256-GCM encrypted via Android Keystore (`androidx.security:security-crypto`) since v1.1.4.
+- Refresh tokens, wallet addresses, and your developer API key are stripped from any admin-side debug response.
+
+This means anti-bot vendors (DataDome, PerimeterX, Cloudflare Bot Manager, Akamai) cannot pre-emptively blacklist your device by scraping our pool listing — a common failure mode for shared-proxy networks. Your IP enters the customer routing pipeline cold, not on a public reputation feed.
+
 ## Revenue Model
 
 Earnings are tiered by IP type — mobile IPs earn the most:
