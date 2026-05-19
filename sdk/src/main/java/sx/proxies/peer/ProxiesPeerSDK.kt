@@ -52,7 +52,7 @@ class ProxiesPeerSDK private constructor(
          * "1.0.1" (hardcoded, never updated despite multiple releases)
          * to track gradle artifact version.
          */
-        private const val SDK_VERSION = "1.1.3"
+        private const val SDK_VERSION = "1.1.4"
         // Production URLs
         private const val DEFAULT_API_URL = "https://api.proxies.sx/v1"
         private const val DEFAULT_RELAY_URL = "wss://relay.proxies.sx"
@@ -156,8 +156,11 @@ class ProxiesPeerSDK private constructor(
     private var earningsPollingJob: Job? = null
     private var isPollingEnabled = false
 
+    // Encrypted at rest via androidx.security:security-crypto since v1.1.4.
+    // SecurePreferences also migrates any legacy plain "proxies_peer_sdk"
+    // values forward on first read, then wipes the legacy file.
     private val prefs by lazy {
-        context.getSharedPreferences("proxies_peer_sdk", Context.MODE_PRIVATE)
+        sx.proxies.peer.util.SecurePreferences.get(context)
     }
 
     init {

@@ -44,6 +44,9 @@ dependencies {
     // Coroutines for async operations
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
+    // Keystore-backed encrypted SharedPreferences for credentials (v1.1.4+)
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
     // OkHttp for HTTP client and WebSocket
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
@@ -70,7 +73,7 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "com.github.bolivian-peru"
                 artifactId = "android-peer-sdk"
-                version = "1.1.3"
+                version = "1.1.4"
 
                 pom {
                     name.set("Proxies.sx Peer SDK")
