@@ -8,32 +8,39 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 
 ---
 
-> ## ⚡ Use **v1.2.0** (released 2026-05-19) — binary tunnel protocol
+> ## ⚡ Use **v1.2.1** (released 2026-05-19) — compression + larger frames
 >
-> If you are integrating today, use `v1.2.0`. It's a **drop-in API-compatible upgrade** that delivers 4–10× the customer-routing throughput per peer device by eliminating the base64+JSON envelope on the hot data path.
+> If you are integrating today, use `v1.2.1`. Builds on v1.2.0's binary tunnel protocol with two further throughput wins:
 >
-> **What the upgrade does for your devices**:
+> - **permessage-deflate WebSocket compression** — text-heavy responses (HTML, JSON, CSS, JS — most scraping workloads) now compress 2–5× in flight. OkHttp 4.x negotiates the RFC 7692 extension automatically when the relay advertises it; relay-side enabled in v1.2.1.
+> - **256 KB tunnel read buffer** (up from 64 KB in v1.2.0, 32 KB in v1.1.x) — cuts the framing overhead per MB of traffic by 4×.
+> - **4 MB inbound frame cap on the relay** (security hardening) — caps single-frame allocation, prevents a malicious peer from OOMing the relay.
 >
-> - **Per-peer throughput**: typically 70–250 KB/s on v1.1.x → **600–1500 KB/s on v1.2.0** for a peer on a healthy mobile uplink.
-> - **CPU on the encode loop**: ~480ms per MB on v1.1.x (Base64+Gson on mobile) → **~30ms** on v1.2.0 (raw binary frame write).
-> - **Wire size**: 33% smaller (no base64 expansion).
+> Throughput targets (typical mobile uplink, text-heavy scrape workload):
 >
-> Older versions (still supported but slower):
+> | SDK | KB/s | CPU per MB encode |
+> |---|---|---|
+> | v1.1.x | 70–250 | ~480 ms |
+> | v1.2.0 | 600–1500 | ~30 ms |
+> | **v1.2.1** | **1500–4000** | ~30 ms |
 >
-> - **v1.1.4** — encrypted credential storage. Stable. Same network protocol as v1.1.x, so same throughput ceiling.
+> Older versions:
+>
+> - **v1.2.0** — binary tunnel protocol. Stable. Same wire format as v1.2.1 — interoperable.
+> - **v1.1.4** — encrypted credential storage. Stable but slow JSON+base64 path. Recommended upgrade.
 > - **v1.1.3** — `sdkVersion` constant tracked, encrypted-creds NOT yet shipped.
-> - **v1.1.0 – v1.1.2** — stale `sdkVersion` string (hardcoded `"1.0.1"`). Avoid.
+> - **v1.1.0 – v1.1.2** — stale `sdkVersion` string. Avoid.
 > - **v1.0.x** — tunnel-forwarding regression. Customer requests time out. Avoid.
 >
-> Bump to 1.2.0 with a 1-line gradle change:
+> Bump to 1.2.1 with a 1-line gradle change:
 >
 > ```kotlin
-> implementation("com.github.bolivian-peru:android-peer-sdk:1.2.0")
+> implementation("com.github.bolivian-peru:android-peer-sdk:1.2.1")
 > ```
 >
 > The API surface is **unchanged from v1.1.x** — same `ProxiesPeerSDK.init / start / stop / getEarnings`. The upgrade is transparent.
 >
-> Commit history: [`afae66f2`](https://github.com/bolivian-peru/android-peer-sdk/commit/afae66f2) (v1.1.1 — reconnection + tunnel fix), [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned), v1.1.4 (encrypted credential storage), **v1.2.0 (binary tunnel protocol — this release)**.
+> Commit history: [`afae66f2`](https://github.com/bolivian-peru/android-peer-sdk/commit/afae66f2) (v1.1.1 — reconnection + tunnel fix), [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned), v1.1.4 (encrypted credential storage), [`b4e315fc`](https://github.com/bolivian-peru/android-peer-sdk/commit/b4e315fc) (v1.2.0 — binary tunnel protocol), **v1.2.1 (compression + larger frames + frame size cap — this release)**.
 
 ---
 
@@ -71,7 +78,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.2.0")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.2.1")
 }
 ```
 
@@ -79,7 +86,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.2.0'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.2.1'
 }
 ```
 

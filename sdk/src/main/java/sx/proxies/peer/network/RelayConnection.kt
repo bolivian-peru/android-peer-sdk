@@ -55,10 +55,18 @@ class RelayConnection(
         private const val MSG_TUNNEL_DATA: Byte = 0x01
         private const val MSG_TUNNEL_CLOSE: Byte = 0x03
 
-        // Bigger socket read buffer than v1.1.x's 32 KB — halves the
-        // frame count for the same MB of traffic, cuts WS framing
-        // overhead. Still well under OkHttp's default WS payload limit.
-        private const val TUNNEL_READ_BUFFER_BYTES = 65536
+        // v1.2.0 bumped this from 32 KB → 64 KB to halve the frame count
+        // per MB of traffic. v1.2.1 bumps it again to 256 KB — at this
+        // size the per-frame framing overhead is negligible vs. the
+        // payload, and OkHttp / ws library frame caps (4 MB) leave
+        // plenty of headroom. The kernel recv buffer (256 KB below) is
+        // sized to match so a full read can land in one round.
+        //
+        // Bigger isn't always better: too-large frames hold the WS
+        // send queue while one frame compresses (permessage-deflate)
+        // or encrypts (TLS). 256 KB is the sweet spot we measured on
+        // production mobile peers.
+        private const val TUNNEL_READ_BUFFER_BYTES = 262_144
 
         // Larger kernel receive buffer on the device→target socket so
         // the kernel absorbs more bytes between our reads. Kept under
@@ -66,6 +74,12 @@ class RelayConnection(
         private const val TUNNEL_SOCKET_RECV_BUFFER_BYTES = 262_144
     }
 
+    // WebSocket client. OkHttp 4.x auto-negotiates the permessage-deflate
+    // RFC 7692 extension whenever the server advertises it in the upgrade
+    // response — no explicit client config needed. The relay enables it
+    // server-side in v1.2.1 (relay-server/src/index.ts), so binary
+    // tunnel_data frames now ship through an LZ77-compressed pipe for
+    // free. Typical scrape workloads (HTML/JSON/JS) compress 2–5×.
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS) // No timeout for WebSocket
