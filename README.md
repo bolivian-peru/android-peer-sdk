@@ -146,28 +146,11 @@ Once your device is connected, manage it from the farmer dashboard:
 | Uptime | Minimum 1 hour online |
 | Quality | Score must be >= 50/100 |
 
-## IP Rotation
+## IP Rotation (planned — not in v1.1.x)
 
-The SDK supports IP rotation on non-rooted Android devices via the Accessibility Service.
+SDK-side IP rotation via accessibility-service-driven airplane-mode toggle is on the roadmap but **does not ship in v1.1.x**. The classes `AirplaneModeAccessibilityService`, `IPRotationManager` and the methods `sdk.rotateIP()`, `sdk.isIPRotationAvailable()`, `sdk.rotateIPAsync()`, `sdk.openIPRotationSettings()` are not present in the artifact — earlier README revisions documented them in error.
 
-```kotlin
-// Check if rotation available
-if (sdk.isIPRotationAvailable()) {
-    sdk.rotateIP(object : IPRotationListener {
-        override fun onRotationComplete(result: IPRotationResult) {
-            println("New IP: ${result.newIp}")
-        }
-    })
-} else {
-    // Prompt user to enable accessibility service
-    sdk.openIPRotationSettings()
-}
-
-// Coroutine version
-val result = sdk.rotateIPAsync()
-```
-
-Rotation toggles airplane mode on/off (10s delay) to get a new carrier IP. Requires the "Proxies IP Rotation" accessibility service to be enabled in device settings. 60-second cooldown between rotations.
+The backend route `POST /v1/peer/devices/:id/rotate` exists but returns HTTP 501 for v1.1.x clients. The feature is tracked under Phase 3b of the SDK production-readiness plan and will land in a future major version.
 
 ## Required Permissions
 
@@ -235,10 +218,6 @@ IP type is classified server-side via ASN lookup. Earnings accumulate per-GB and
 | `isRunning()` | Check if service is running |
 | `getStatus()` | Get current status enum |
 | `getEarnings()` | Get earnings (suspend function) |
-| `isIPRotationAvailable()` | Check if IP rotation is enabled |
-| `rotateIP(listener)` | Trigger IP rotation via airplane mode toggle |
-| `rotateIPAsync()` | Coroutine version of IP rotation |
-| `openIPRotationSettings()` | Open accessibility settings for user to enable rotation |
 
 ## Status Values
 
