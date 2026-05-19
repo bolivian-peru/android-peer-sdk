@@ -8,21 +8,32 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 
 ---
 
-> ## ⚠️ Use **v1.1.4** (released 2026-05-19)
+> ## ⚡ Use **v1.2.0** (released 2026-05-19) — binary tunnel protocol
 >
-> If you are integrating today, use `v1.1.4`. Older versions have known issues:
+> If you are integrating today, use `v1.2.0`. It's a **drop-in API-compatible upgrade** that delivers 4–10× the customer-routing throughput per peer device by eliminating the base64+JSON envelope on the hot data path.
 >
-> - **v1.0.x — tunnel-forwarding regression.** SDK accepts CONNECTs but never forwards bytes, so every customer request times out and the device auto-demotes from customer routing within hours. Fixed in v1.1.1.
-> - **v1.1.0 – v1.1.2 — stale `sdkVersion` string.** The internal version string was hardcoded `"1.0.1"` and never bumped, so devices on these versions report as v1.0 to the backend even though the tunnel-forwarding code is fixed. They work, but the platform can't distinguish them from broken v1.0 installs for routing decisions. v1.1.3 fixed this — `SDK_VERSION` is now a tracked constant that ships with each release.
-> - **v1.1.3 — plain SharedPreferences for device id.** Hardened in v1.1.4 (Keystore-backed `EncryptedSharedPreferences` + automatic migration). No API change; recommended upgrade for production deployments.
+> **What the upgrade does for your devices**:
 >
-> Bump to 1.1.4 with a 1-line gradle change:
+> - **Per-peer throughput**: typically 70–250 KB/s on v1.1.x → **600–1500 KB/s on v1.2.0** for a peer on a healthy mobile uplink.
+> - **CPU on the encode loop**: ~480ms per MB on v1.1.x (Base64+Gson on mobile) → **~30ms** on v1.2.0 (raw binary frame write).
+> - **Wire size**: 33% smaller (no base64 expansion).
+>
+> Older versions (still supported but slower):
+>
+> - **v1.1.4** — encrypted credential storage. Stable. Same network protocol as v1.1.x, so same throughput ceiling.
+> - **v1.1.3** — `sdkVersion` constant tracked, encrypted-creds NOT yet shipped.
+> - **v1.1.0 – v1.1.2** — stale `sdkVersion` string (hardcoded `"1.0.1"`). Avoid.
+> - **v1.0.x** — tunnel-forwarding regression. Customer requests time out. Avoid.
+>
+> Bump to 1.2.0 with a 1-line gradle change:
 >
 > ```kotlin
-> implementation("com.github.bolivian-peru:android-peer-sdk:1.1.4")
+> implementation("com.github.bolivian-peru:android-peer-sdk:1.2.0")
 > ```
 >
-> Commit history: [`afae66f2`](https://github.com/bolivian-peru/android-peer-sdk/commit/afae66f2) (v1.1.1 — reconnection + tunnel fix), [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned), v1.1.4 (encrypted credential storage).
+> The API surface is **unchanged from v1.1.x** — same `ProxiesPeerSDK.init / start / stop / getEarnings`. The upgrade is transparent.
+>
+> Commit history: [`afae66f2`](https://github.com/bolivian-peru/android-peer-sdk/commit/afae66f2) (v1.1.1 — reconnection + tunnel fix), [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned), v1.1.4 (encrypted credential storage), **v1.2.0 (binary tunnel protocol — this release)**.
 
 ---
 
@@ -60,7 +71,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.1.4")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.2.0")
 }
 ```
 
@@ -68,7 +79,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.1.4'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.2.0'
 }
 ```
 

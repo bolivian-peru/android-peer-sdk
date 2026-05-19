@@ -52,7 +52,7 @@ class ProxiesPeerSDK private constructor(
          * "1.0.1" (hardcoded, never updated despite multiple releases)
          * to track gradle artifact version.
          */
-        private const val SDK_VERSION = "1.1.4"
+        private const val SDK_VERSION = "1.2.0"
         // Production URLs
         private const val DEFAULT_API_URL = "https://api.proxies.sx/v1"
         private const val DEFAULT_RELAY_URL = "wss://relay.proxies.sx"
