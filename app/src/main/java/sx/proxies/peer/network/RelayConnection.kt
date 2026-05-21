@@ -19,7 +19,10 @@ import java.util.concurrent.TimeUnit
 
 class RelayConnection(
     private val context: Context,
-    private val relayUrl: String,
+    // Mutable: a relay_redirect rewrites this and the reconnect path dials it.
+    private var relayUrl: String,
+    // Operator pinned a relay in Config -> ignore all runtime redirects.
+    private val relayPinned: Boolean = false,
     private val token: String,
     private val onConnected: (deviceId: String) -> Unit,
     private val onDisconnected: () -> Unit,
@@ -30,6 +33,12 @@ class RelayConnection(
         private const val TAG = "RelayConnection"
         private const val HEARTBEAT_INTERVAL = 30000L
         private const val RECONNECT_DELAY = 5000L
+        // Anti-flap guard: honor at most one relay_redirect per 60s.
+        private const val RELAY_REDIRECT_MIN_INTERVAL = 60000L
+        // Defense-in-depth: only ever redirect to a *.proxies.sx wss URL.
+        private val RELAY_URL_REGEX =
+            Regex("^wss://[a-z0-9.-]+\\.proxies\\.sx(?:/|$)", RegexOption.IGNORE_CASE)
+        private const val WS_CLOSE_RELAY_REDIRECT = 4100
     }
 
     private val client = OkHttpClient.Builder()
@@ -54,6 +63,7 @@ class RelayConnection(
     private var shouldReconnect = true
     private var reconnectAttempts = 0
     private var publicIp: String = ""
+    @Volatile private var lastRedirectAt = 0L
 
     private val pendingResponses = ConcurrentHashMap<String, CompletableDeferred<ProxyResponse>>()
 
@@ -170,7 +180,11 @@ class RelayConnection(
             "carrier" to carrierName,
             "model" to "${Build.MANUFACTURER} ${Build.MODEL}",
             "osVersion" to "Android ${Build.VERSION.RELEASE}",
-            "currentIp" to publicIp
+            "currentIp" to publicIp,
+            // Opt in to server-driven nearest-relay routing. Peers that don't
+            // advertise this are never sent a relay_redirect.
+            "supportsRelayRedirect" to true,
+            "sdkVersion" to sx.proxies.peer.ProxiesPeerSDK.SDK_VERSION
         )
 
         DebugLogger.i("Device info: country=$countryCode, carrier=$carrierName, ip=$publicIp")
@@ -232,6 +246,10 @@ class RelayConnection(
                     DebugLogger.v("Heartbeat ACK")
                 }
 
+                "relay_redirect" -> {
+                    payload?.let { handleRelayRedirect(it) }
+                }
+
                 "http_response" -> {
                     payload?.let { handleHttpResponse(it) }
                 }
@@ -248,6 +266,39 @@ class RelayConnection(
         } catch (e: Exception) {
             DebugLogger.e("Error handling message", e)
         }
+    }
+
+    /**
+     * Handle a server-driven relay redirect: switch the active relay URL and
+     * reconnect via the existing reconnect path. Mirrors the reference SDK.
+     */
+    private fun handleRelayRedirect(payload: JsonObject) {
+        val target = payload.get("relay")?.asString
+        val reason = payload.get("reason")?.asString ?: "geo"
+
+        if (relayPinned) {
+            DebugLogger.d("Ignoring relay_redirect: operator pinned relay")
+            return
+        }
+        if (target == null || !RELAY_URL_REGEX.containsMatchIn(target)) {
+            DebugLogger.w("Ignoring relay_redirect: invalid target=$target")
+            return
+        }
+        if (target == relayUrl) {
+            DebugLogger.d("Ignoring relay_redirect: already on $target")
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastRedirectAt < RELAY_REDIRECT_MIN_INTERVAL) {
+            DebugLogger.d("Ignoring relay_redirect: anti-flap guard (<60s)")
+            return
+        }
+        lastRedirectAt = now
+
+        DebugLogger.i("Relay redirect: $relayUrl -> $target ($reason)")
+        relayUrl = target
+        // Tear down current socket; onClosed -> handleDisconnect() reconnects.
+        webSocket?.close(WS_CLOSE_RELAY_REDIRECT, "relay_redirect")
     }
 
     private fun handleProxyRequest(payload: JsonObject) {

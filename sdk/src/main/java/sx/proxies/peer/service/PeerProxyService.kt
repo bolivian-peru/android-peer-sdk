@@ -26,12 +26,14 @@ class PeerProxyService : Service() {
         const val ACTION_STOP = "sx.proxies.peer.action.STOP"
         const val EXTRA_DEVICE_TOKEN = "device_token"
         const val EXTRA_RELAY_URL = "relay_url"
+        const val EXTRA_RELAY_PINNED = "relay_pinned"
 
-        fun start(context: Context, deviceToken: String, relayUrl: String) {
+        fun start(context: Context, deviceToken: String, relayUrl: String, relayPinned: Boolean = false) {
             val intent = Intent(context, PeerProxyService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_DEVICE_TOKEN, deviceToken)
                 putExtra(EXTRA_RELAY_URL, relayUrl)
+                putExtra(EXTRA_RELAY_PINNED, relayPinned)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -68,7 +70,8 @@ class PeerProxyService : Service() {
             ACTION_START -> {
                 val token = intent.getStringExtra(EXTRA_DEVICE_TOKEN) ?: return START_NOT_STICKY
                 val relayUrl = intent.getStringExtra(EXTRA_RELAY_URL) ?: return START_NOT_STICKY
-                startProxy(token, relayUrl)
+                val relayPinned = intent.getBooleanExtra(EXTRA_RELAY_PINNED, false)
+                startProxy(token, relayUrl, relayPinned)
                 return START_STICKY
             }
             ACTION_STOP -> {
@@ -82,7 +85,7 @@ class PeerProxyService : Service() {
         }
     }
 
-    private fun startProxy(token: String, relayUrl: String) {
+    private fun startProxy(token: String, relayUrl: String, relayPinned: Boolean) {
         Log.d(TAG, "Starting proxy service")
 
         // Start foreground immediately
@@ -94,6 +97,7 @@ class PeerProxyService : Service() {
                 relayConnection = RelayConnection(
                     context = applicationContext,
                     relayUrl = relayUrl,
+                    relayPinned = relayPinned,
                     token = token,
                     onConnected = { deviceId ->
                         isConnected = true

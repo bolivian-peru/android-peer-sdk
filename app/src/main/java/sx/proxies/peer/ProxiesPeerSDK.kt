@@ -44,6 +44,12 @@ class ProxiesPeerSDK private constructor(
         // Production URLs
         private const val DEFAULT_API_URL = "https://api.proxies.sx/v1"
         private const val DEFAULT_RELAY_URL = "wss://relay.proxies.sx"
+
+        /**
+         * Tracked SDK version. Reported in registration and in the relay
+         * `device_info` handshake. `internal` so RelayConnection can echo it.
+         */
+        internal const val SDK_VERSION = "1.3.0"
         // Development URLs (uncomment for local testing)
         // private const val DEFAULT_API_URL = "http://10.0.2.2:4500/v1"  // Android emulator localhost
         // private const val DEFAULT_RELAY_URL = "ws://10.0.2.2:8080"
@@ -77,7 +83,10 @@ class ProxiesPeerSDK private constructor(
 
     data class Config(
         val apiUrl: String = DEFAULT_API_URL,
-        val relayUrl: String = DEFAULT_RELAY_URL,
+        // Operator relay pin. Leave null (default) to let the platform
+        // geo-route this device and migrate it at runtime via relay_redirect.
+        // Set this ONLY to force a specific relay (disables geo + redirects).
+        val relayUrl: String? = null,
         val userId: String? = null, // Optional: link to your user system
         val onEarningsUpdate: ((EarningsInfo) -> Unit)? = null,
         val onStatusChange: ((Status) -> Unit)? = null
@@ -138,6 +147,9 @@ class ProxiesPeerSDK private constructor(
 
     private var deviceId: String? = null
     private var deviceToken: String? = null
+    // Geo-assigned relay from registration; persisted across launches. May be
+    // further migrated at runtime via relay_redirect.
+    private var assignedRelay: String? = null
     private var currentStatus = Status.STOPPED
 
     // Earnings auto-polling
@@ -149,8 +161,9 @@ class ProxiesPeerSDK private constructor(
     }
 
     init {
-        // Load persisted device ID
+        // Load persisted device ID and geo-assigned relay
         deviceId = prefs.getString("device_id", null)
+        assignedRelay = prefs.getString("relay_url", null)
     }
 
     /**
@@ -173,10 +186,14 @@ class ProxiesPeerSDK private constructor(
                 // Start foreground service
                 val token = deviceToken
                 if (token != null) {
+                    // Relay precedence: operator pin > geo-assigned > default.
+                    val relay = config.relayUrl ?: assignedRelay ?: DEFAULT_RELAY_URL
+                    val relayPinned = config.relayUrl != null
                     PeerProxyService.start(
                         context,
                         token,
-                        config.relayUrl
+                        relay,
+                        relayPinned
                     )
                     // Note: Status will be CONNECTING until relay actually connects
                     // The service will update status via callbacks
@@ -474,7 +491,7 @@ class ProxiesPeerSDK private constructor(
             "appVersion" to getAppVersion(),
             "country" to getCountryCode(),
             "carrier" to getCarrierName(),
-            "sdkVersion" to "1.0.1",
+            "sdkVersion" to SDK_VERSION,
             "apiKey" to apiKey,
             "userId" to config.userId
         )
@@ -496,10 +513,19 @@ class ProxiesPeerSDK private constructor(
                 deviceId = responseJson?.get("device")?.asJsonObject?.get("deviceId")?.asString
                 deviceToken = responseJson?.get("token")?.asString
 
-                // Persist device ID
-                prefs.edit().putString("device_id", deviceId).apply()
+                // Geo-assigned nearest relay for this device's source IP.
+                val relay = responseJson?.get("relay")?.asString
+                if (!relay.isNullOrEmpty()) {
+                    assignedRelay = relay
+                }
 
-                Log.d(TAG, "Device registered: $deviceId")
+                // Persist device ID and the geo-assigned relay
+                prefs.edit()
+                    .putString("device_id", deviceId)
+                    .putString("relay_url", assignedRelay)
+                    .apply()
+
+                Log.d(TAG, "Device registered: $deviceId (relay: ${assignedRelay ?: DEFAULT_RELAY_URL})")
             } else {
                 throw Exception("Registration failed: ${resp.code}")
             }

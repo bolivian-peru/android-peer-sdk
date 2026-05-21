@@ -8,39 +8,40 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 
 ---
 
-> ## ⚡ Use **v1.2.1** (released 2026-05-19) — compression + larger frames
+> ## ⚡ Use **v1.3.0** (released 2026-05-21) — multi-region relay routing
 >
-> If you are integrating today, use `v1.2.1`. Builds on v1.2.0's binary tunnel protocol with two further throughput wins:
+> If you are integrating today, use `v1.3.0`. Keeps v1.2.1's binary tunnel protocol + compression and adds **server-controlled relay routing** so each peer connects to the geographically nearest relay instead of the hardcoded EU host:
 >
-> - **permessage-deflate WebSocket compression** — text-heavy responses (HTML, JSON, CSS, JS — most scraping workloads) now compress 2–5× in flight. OkHttp 4.x negotiates the RFC 7692 extension automatically when the relay advertises it; relay-side enabled in v1.2.1.
-> - **256 KB tunnel read buffer** (up from 64 KB in v1.2.0, 32 KB in v1.1.x) — cuts the framing overhead per MB of traffic by 4×.
-> - **4 MB inbound frame cap on the relay** (security hardening) — caps single-frame allocation, prevents a malicious peer from OOMing the relay.
+> - **Geo-assigned relay at registration** — the `/peer/register` response now carries a `relay` field (US/LATAM → `wss://relay-us.proxies.sx`, everyone else → `wss://relay.proxies.sx`). The SDK connects to that relay and persists it. A device in Brazil or the US no longer tunnels every byte across the Atlantic — which was collapsing single-stream throughput to ~0.3 MB/s regardless of the device's real uplink.
+> - **Runtime relay redirect** — after advertising `supportsRelayRedirect: true` in `device_info`, the relay can send `relay_redirect` to migrate the peer to a nearer relay at runtime. The fleet auto-migrates when a new region comes online — no app update needed. Guards: only `*.proxies.sx` wss targets are honored, a 60s anti-flap interval prevents ping-ponging, and an explicit `relayUrl` operator pin disables redirects entirely.
 >
 > Throughput targets (typical mobile uplink, text-heavy scrape workload):
 >
-> | SDK | KB/s | CPU per MB encode |
-> |---|---|---|
-> | v1.1.x | 70–250 | ~480 ms |
-> | v1.2.0 | 600–1500 | ~30 ms |
-> | **v1.2.1** | **1500–4000** | ~30 ms |
+> | SDK | KB/s | CPU per MB encode | Relay |
+> |---|---|---|---|
+> | v1.1.x | 70–250 | ~480 ms | EU only (hardcoded) |
+> | v1.2.0 | 600–1500 | ~30 ms | EU only (hardcoded) |
+> | v1.2.1 | 1500–4000 | ~30 ms | EU only (hardcoded) |
+> | **v1.3.0** | **1500–4000** | ~30 ms | **nearest region (geo-routed)** |
 >
 > Older versions:
 >
-> - **v1.2.0** — binary tunnel protocol. Stable. Same wire format as v1.2.1 — interoperable.
-> - **v1.1.4** — encrypted credential storage. Stable but slow JSON+base64 path. Recommended upgrade.
+> - **v1.2.1** — compression + 256 KB frames. Stable, but pins every peer to the EU relay.
+> - **v1.2.0** — binary tunnel protocol. Stable. Same wire format as v1.2.1/v1.3.0 — interoperable.
+> - **v1.1.4** — encrypted credential storage. Stable but slow JSON+base64 path.
 > - **v1.1.3** — `sdkVersion` constant tracked, encrypted-creds NOT yet shipped.
 > - **v1.1.0 – v1.1.2** — stale `sdkVersion` string. Avoid.
 > - **v1.0.x** — tunnel-forwarding regression. Customer requests time out. Avoid.
 >
-> Bump to 1.2.1 with a 1-line gradle change:
+> Bump to 1.3.0 with a 1-line gradle change:
 >
 > ```kotlin
-> implementation("com.github.bolivian-peru:android-peer-sdk:1.2.1")
+> implementation("com.github.bolivian-peru:android-peer-sdk:1.3.0")
 > ```
 >
-> The API surface is **unchanged from v1.1.x** — same `ProxiesPeerSDK.init / start / stop / getEarnings`. The upgrade is transparent.
+> The API surface is **unchanged** — same `ProxiesPeerSDK.init / start / stop / getEarnings`. Relay routing is fully automatic; `Config.relayUrl` stays optional (leave unset to geo-route). The upgrade is transparent.
 >
-> Commit history: [`afae66f2`](https://github.com/bolivian-peru/android-peer-sdk/commit/afae66f2) (v1.1.1 — reconnection + tunnel fix), [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned), v1.1.4 (encrypted credential storage), [`b4e315fc`](https://github.com/bolivian-peru/android-peer-sdk/commit/b4e315fc) (v1.2.0 — binary tunnel protocol), **v1.2.1 (compression + larger frames + frame size cap — this release)**.
+> Commit history: [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned), v1.1.4 (encrypted credential storage), [`b4e315fc`](https://github.com/bolivian-peru/android-peer-sdk/commit/b4e315fc) (v1.2.0 — binary tunnel protocol), v1.2.1 (compression + larger frames + frame size cap), **v1.3.0 (multi-region relay routing — this release)**.
 
 ---
 
@@ -78,7 +79,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.2.1")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.3.0")
 }
 ```
 
@@ -86,7 +87,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.2.1'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.3.0'
 }
 ```
 
@@ -271,7 +272,9 @@ ProxiesPeerSDK.Config(
     // Earnings update callback
     onEarningsUpdate = { earnings -> },
 
-    // Custom relay server (optional, for testing)
+    // Operator relay pin (optional). Leave unset to let the platform
+    // geo-route this device to the nearest relay and migrate it at runtime.
+    // Set this ONLY to force a specific relay (disables geo-routing).
     relayUrl = "wss://relay.proxies.sx",
 
     // Maximum bandwidth to share (MB per hour)

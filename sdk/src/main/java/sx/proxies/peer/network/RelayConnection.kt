@@ -24,7 +24,11 @@ import java.util.concurrent.TimeUnit
 
 class RelayConnection(
     private val context: Context,
-    private val relayUrl: String,
+    // Mutable: a server-driven relay_redirect rewrites this and the existing
+    // reconnect path dials the new value. Starts at the geo-assigned relay.
+    private var relayUrl: String,
+    // Operator pinned a relay in Config -> ignore all runtime redirects.
+    private val relayPinned: Boolean = false,
     private val token: String,
     private val onConnected: (deviceId: String) -> Unit,
     private val onDisconnected: () -> Unit,
@@ -37,6 +41,20 @@ class RelayConnection(
         private const val RECONNECT_DELAY_BASE = 5000L  // 5 seconds
         private const val RECONNECT_DELAY_MAX = 120000L  // 2 minutes max
         private const val MAX_RECONNECT_ATTEMPTS = 50
+
+        // ─── Multi-region relay routing (v1.3.0 — May 2026) ──────────────
+        //
+        // Whichever relay a peer lands on can tell it (via `relay_redirect`)
+        // to reconnect to a nearer one for its geo. Anti-flap guard: honor at
+        // most one redirect per 60s so a flapping geo-classification can't
+        // ping-pong the device between relays.
+        private const val RELAY_REDIRECT_MIN_INTERVAL = 60000L // 60 seconds
+        // Defense-in-depth: only ever redirect to a *.proxies.sx wss URL so a
+        // spoofed/compromised message can't point peers at an attacker host.
+        private val RELAY_URL_REGEX =
+            Regex("^wss://[a-z0-9.-]+\\.proxies\\.sx(?:/|$)", RegexOption.IGNORE_CASE)
+        // WS close code used when tearing down a socket to follow a redirect.
+        private const val WS_CLOSE_RELAY_REDIRECT = 4100
 
         // ─── Binary tunnel protocol (v1.2.0 — May 2026) ──────────────────
         //
@@ -103,6 +121,7 @@ class RelayConnection(
     @Volatile private var isReconnecting = false
     private var reconnectAttempt = 0
     private var publicIp: String = ""
+    @Volatile private var lastRedirectAt = 0L
 
     // Flipped to true after the relay sends back its `connected` ack,
     // which is the platform's signal that our `protocol: "binary-v1"`
@@ -214,6 +233,10 @@ class RelayConnection(
             "osVersion" to "Android ${Build.VERSION.RELEASE}",
             "currentIp" to publicIp,
             "protocol" to "binary-v1",
+            // Opt in to server-driven nearest-relay routing (v1.3.0). Peers
+            // that don't advertise this are never sent a relay_redirect.
+            "supportsRelayRedirect" to true,
+            "sdkVersion" to sx.proxies.peer.ProxiesPeerSDK.SDK_VERSION,
         )
 
         DebugLogger.d("Sending device info: country=$countryCode, carrier=$carrierName, ip=$publicIp, protocol=binary-v1")
@@ -268,6 +291,10 @@ class RelayConnection(
                     DebugLogger.v("Heartbeat acknowledged")
                 }
 
+                "relay_redirect" -> {
+                    payload?.let { handleRelayRedirect(it) }
+                }
+
                 "http_response" -> {
                     payload?.let { handleHttpResponse(it) }
                 }
@@ -284,6 +311,45 @@ class RelayConnection(
         } catch (e: Exception) {
             DebugLogger.e("Error handling message: ${e.message}", e)
         }
+    }
+
+    /**
+     * Handle a server-driven relay redirect: the relay tells us a nearer relay
+     * exists for our geo. Switch the active relay URL and reconnect there using
+     * the existing reconnect path. Mirrors the Node reference SDK / skill.md.
+     */
+    private fun handleRelayRedirect(payload: JsonObject) {
+        val target = payload.get("relay")?.asString
+        val reason = payload.get("reason")?.asString ?: "geo"
+
+        // Operator pin wins: respect the integrator's explicit relay choice.
+        if (relayPinned) {
+            DebugLogger.d("Ignoring relay_redirect: operator pinned relay")
+            return
+        }
+        // Defense-in-depth: only redirect to a *.proxies.sx wss URL.
+        if (target == null || !RELAY_URL_REGEX.containsMatchIn(target)) {
+            DebugLogger.w("Ignoring relay_redirect: invalid target=$target")
+            return
+        }
+        // No-op if we're already on the target relay.
+        if (target == relayUrl) {
+            DebugLogger.d("Ignoring relay_redirect: already on $target")
+            return
+        }
+        // Anti-flap: at most one honored redirect per 60s.
+        val now = System.currentTimeMillis()
+        if (now - lastRedirectAt < RELAY_REDIRECT_MIN_INTERVAL) {
+            DebugLogger.d("Ignoring relay_redirect: anti-flap guard (<60s)")
+            return
+        }
+        lastRedirectAt = now
+
+        DebugLogger.i("Relay redirect: $relayUrl -> $target ($reason)")
+        relayUrl = target
+        // Tear down the current socket; onClosed -> handleDisconnect() reconnects
+        // to the updated relayUrl via the existing exponential-backoff path.
+        webSocket?.close(WS_CLOSE_RELAY_REDIRECT, "relay_redirect")
     }
 
     private fun handleProxyRequest(payload: JsonObject) {

@@ -29,13 +29,15 @@ class PeerProxyService : Service() {
         const val ACTION_STOP = "sx.proxies.peer.action.STOP"
         const val EXTRA_DEVICE_TOKEN = "device_token"
         const val EXTRA_RELAY_URL = "relay_url"
+        const val EXTRA_RELAY_PINNED = "relay_pinned"
 
-        fun start(context: Context, deviceToken: String, relayUrl: String) {
+        fun start(context: Context, deviceToken: String, relayUrl: String, relayPinned: Boolean = false) {
             DebugLogger.d("Starting foreground service...")
             val intent = Intent(context, PeerProxyService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_DEVICE_TOKEN, deviceToken)
                 putExtra(EXTRA_RELAY_URL, relayUrl)
+                putExtra(EXTRA_RELAY_PINNED, relayPinned)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -75,13 +77,14 @@ class PeerProxyService : Service() {
             ACTION_START -> {
                 val token = intent.getStringExtra(EXTRA_DEVICE_TOKEN)
                 val relayUrl = intent.getStringExtra(EXTRA_RELAY_URL)
+                val relayPinned = intent.getBooleanExtra(EXTRA_RELAY_PINNED, false)
 
                 if (token == null || relayUrl == null) {
                     DebugLogger.e("Missing token or relay URL!")
                     return START_NOT_STICKY
                 }
 
-                startProxy(token, relayUrl)
+                startProxy(token, relayUrl, relayPinned)
                 return START_STICKY
             }
             ACTION_STOP -> {
@@ -95,7 +98,7 @@ class PeerProxyService : Service() {
         }
     }
 
-    private fun startProxy(token: String, relayUrl: String) {
+    private fun startProxy(token: String, relayUrl: String, relayPinned: Boolean) {
         DebugLogger.i("Starting proxy service...")
         DebugLogger.d("Token length: ${token.length}")
         DebugLogger.d("Relay URL: $relayUrl")
@@ -109,6 +112,7 @@ class PeerProxyService : Service() {
                 relayConnection = RelayConnection(
                     context = applicationContext,
                     relayUrl = relayUrl,
+                    relayPinned = relayPinned,
                     token = token,
                     onConnected = { deviceId ->
                         DebugLogger.i("*** SERVICE onConnected CALLBACK FIRED ***")
