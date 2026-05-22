@@ -507,6 +507,15 @@ class RelayConnection(
 
                 activeTunnels[sessionId] = socket
 
+                // Tell the relay the outbound socket is open BEFORE we start
+                // reading. The relay buffers the client's TLS ClientHello until
+                // it sees this, so without it the relay falls back to a timed
+                // grace (adds latency) and an older relay would drop the early
+                // bytes entirely (the "tls_dropped" failure). Sending it here —
+                // right after the socket is registered in activeTunnels — is
+                // what makes inbound tunnel_data land on a live socket.
+                sendMessage("tunnel_connected", mapOf("sessionId" to sessionId))
+
                 DebugLogger.i("Tunnel connected to $host:$port")
 
                 // Start reading from socket and forwarding to relay

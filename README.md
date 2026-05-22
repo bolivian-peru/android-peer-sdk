@@ -8,40 +8,20 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 
 ---
 
-> ## ⚡ Use **v1.3.0** (released 2026-05-21) — multi-region relay routing
->
-> If you are integrating today, use `v1.3.0`. Keeps v1.2.1's binary tunnel protocol + compression and adds **server-controlled relay routing** so each peer connects to the geographically nearest relay instead of the hardcoded EU host:
->
-> - **Geo-assigned relay at registration** — the `/peer/register` response now carries a `relay` field (US/LATAM → `wss://relay-us.proxies.sx`, everyone else → `wss://relay.proxies.sx`). The SDK connects to that relay and persists it. A device in Brazil or the US no longer tunnels every byte across the Atlantic — which was collapsing single-stream throughput to ~0.3 MB/s regardless of the device's real uplink.
-> - **Runtime relay redirect** — after advertising `supportsRelayRedirect: true` in `device_info`, the relay can send `relay_redirect` to migrate the peer to a nearer relay at runtime. The fleet auto-migrates when a new region comes online — no app update needed. Guards: only `*.proxies.sx` wss targets are honored, a 60s anti-flap interval prevents ping-ponging, and an explicit `relayUrl` operator pin disables redirects entirely.
->
-> Throughput targets (typical mobile uplink, text-heavy scrape workload):
->
-> | SDK | KB/s | CPU per MB encode | Relay |
-> |---|---|---|---|
-> | v1.1.x | 70–250 | ~480 ms | EU only (hardcoded) |
-> | v1.2.0 | 600–1500 | ~30 ms | EU only (hardcoded) |
-> | v1.2.1 | 1500–4000 | ~30 ms | EU only (hardcoded) |
-> | **v1.3.0** | **1500–4000** | ~30 ms | **nearest region (geo-routed)** |
->
-> Older versions:
->
-> - **v1.2.1** — compression + 256 KB frames. Stable, but pins every peer to the EU relay.
-> - **v1.2.0** — binary tunnel protocol. Stable. Same wire format as v1.2.1/v1.3.0 — interoperable.
-> - **v1.1.4** — encrypted credential storage. Stable but slow JSON+base64 path.
-> - **v1.1.3** — `sdkVersion` constant tracked, encrypted-creds NOT yet shipped.
-> - **v1.1.0 – v1.1.2** — stale `sdkVersion` string. Avoid.
-> - **v1.0.x** — tunnel-forwarding regression. Customer requests time out. Avoid.
->
-> Bump to 1.3.0 with a 1-line gradle change:
+> ## Current version: **v1.3.1**
 >
 > ```kotlin
-> implementation("com.github.bolivian-peru:android-peer-sdk:1.3.0")
+> implementation("com.github.bolivian-peru:android-peer-sdk:1.3.1")
 > ```
 >
-> The API surface is **unchanged** — same `ProxiesPeerSDK.init / start / stop / getEarnings`. Relay routing is fully automatic; `Config.relayUrl` stays optional (leave unset to geo-route). The upgrade is transparent.
+> v1.3.1 delivers fast, full-throughput bandwidth sharing. Four things make it fast:
 >
-> Commit history: [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned), v1.1.4 (encrypted credential storage), [`b4e315fc`](https://github.com/bolivian-peru/android-peer-sdk/commit/b4e315fc) (v1.2.0 — binary tunnel protocol), v1.2.1 (compression + larger frames + frame size cap), **v1.3.0 (multi-region relay routing — this release)**.
+> - **Full-throughput tunnels** — the SDK signals `tunnel_connected` the instant its outbound socket opens, so the relay streams the customer's traffic immediately instead of stalling on the TLS handshake. This is what lets a device serve traffic at its real uplink speed.
+> - **Nearest-relay routing** — the `/peer/register` response carries a `relay` field; the SDK connects to the geographically nearest relay (US/LATAM → `wss://relay-us.proxies.sx`, everyone else → `wss://relay.proxies.sx`) and honors runtime `relay_redirect`, so no device tunnels across an ocean. Guards: only `*.proxies.sx` wss targets are honored, a 60s anti-flap interval applies, and an explicit `Config.relayUrl` pin disables redirects.
+> - **Binary tunnel protocol + compression** — minimal CPU and per-frame overhead.
+> - **Encrypted credential storage** — AES-256-GCM via Android Keystore.
+>
+> API surface: `ProxiesPeerSDK.init / start / stop / getEarnings`. Relay routing is fully automatic — `Config.relayUrl` is optional (leave unset to geo-route).
 
 ---
 
@@ -79,7 +59,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.3.0")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.3.1")
 }
 ```
 
@@ -87,7 +67,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.3.0'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.3.1'
 }
 ```
 
@@ -120,7 +100,7 @@ class MyApplication : Application() {
 }
 ```
 
-The `apiKey` (format: `psx_...`) auto-links the device to your farmer account. Devices appear in your [farmer dashboard](https://farmer.proxies.sx/peers) immediately after connecting.
+The `apiKey` (format: `psx_...`) auto-links the device to your farmer account. After signing in to your [farmer dashboard](https://farmer.proxies.sx), your devices appear under the **Peers** page immediately after connecting. (The `/peers` page requires login; for public peer-network info and the agent skill file see https://agents.proxies.sx/peer/.)
 
 ### 2. Start/Stop sharing
 
@@ -151,8 +131,8 @@ lifecycleScope.launch {
 
 Once your device is connected, manage it from the farmer dashboard:
 
-1. **farmer.proxies.sx/peers** — See all your devices, status, IP type, country, ISP, traffic, earnings
-2. **Toggle "Listed for Sale"** — List your device in the pool gateway so customers can route traffic through it
+1. **farmer.proxies.sx → Peers** (sign in first) — See all your devices, status, IP type, country, ISP, traffic, earnings
+2. **Auto-listing** — Healthy, verified, online devices are listed in the pool gateway automatically. You can also toggle "Listed for Sale" per device, and enable/disable auto-listing for your account.
 3. **Automated verification** — System checks IP quality, ISP legitimacy, VPN/proxy detection, GeoIP match
 4. **Quality score** — Each device gets a 0-100 score; verified devices serve customer traffic and earn more
 
@@ -373,15 +353,16 @@ If you use ProGuard/R8, the SDK includes consumer ProGuard rules automatically. 
 
 | Resource | URL |
 |----------|-----|
-| Farmer Dashboard | https://farmer.proxies.sx/peers |
+| Farmer Dashboard (login required) | https://farmer.proxies.sx → **Peers** |
+| Peer Landing Page (public) | https://agents.proxies.sx/peer/ |
 | AI Agent Skill File | https://agents.proxies.sx/peer/skill.md |
-| Peer Landing Page | https://agents.proxies.sx/peer/ |
+| Register endpoint (POST) | https://api.proxies.sx/v1/peer/agents/register |
 | API Docs (Swagger) | https://api.proxies.sx/docs/api |
 | MCP Server | https://www.npmjs.com/package/@proxies-sx/mcp-server |
 
 ## Support
 
-- Telegram: https://t.me/proxyforai
+- Telegram: https://t.me/proxies_sx
 - GitHub Issues: https://github.com/bolivian-peru/android-peer-sdk/issues
 
 ## License

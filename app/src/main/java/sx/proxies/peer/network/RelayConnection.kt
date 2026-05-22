@@ -449,6 +449,10 @@ class RelayConnection(
 
                 activeTunnels[sessionId] = socket
 
+                // Tell the relay the outbound socket is open so it flushes the
+                // buffered client ClientHello immediately (no timed grace).
+                sendMessage("tunnel_connected", mapOf("sessionId" to sessionId))
+
                 DebugLogger.i("SUCCESS: Tunnel connected to $host:$port")
 
                 // Flush any buffered data that arrived before socket was ready

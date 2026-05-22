@@ -49,7 +49,7 @@ class ProxiesPeerSDK private constructor(
          * Tracked SDK version. Reported in registration and in the relay
          * `device_info` handshake. `internal` so RelayConnection can echo it.
          */
-        internal const val SDK_VERSION = "1.3.0"
+        internal const val SDK_VERSION = "1.3.1"
         // Development URLs (uncomment for local testing)
         // private const val DEFAULT_API_URL = "http://10.0.2.2:4500/v1"  // Android emulator localhost
         // private const val DEFAULT_RELAY_URL = "ws://10.0.2.2:8080"

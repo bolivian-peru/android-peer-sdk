@@ -57,7 +57,7 @@ class ProxiesPeerSDK private constructor(
          * `internal` so RelayConnection can echo it in the device_info
          * handshake without re-declaring the string.
          */
-        internal const val SDK_VERSION = "1.3.0"
+        internal const val SDK_VERSION = "1.3.1"
         // Production URLs
         private const val DEFAULT_API_URL = "https://api.proxies.sx/v1"
         private const val DEFAULT_RELAY_URL = "wss://relay.proxies.sx"
