@@ -52,12 +52,15 @@ class ProxiesPeerSDK private constructor(
          * "1.0.1" (hardcoded, never updated despite multiple releases)
          * to track gradle artifact version. Bumped to 1.3.0 for
          * multi-region relay routing (geo-assign + relay_redirect),
-         * matching the Node reference SDK that introduced it.
+         * matching the Node reference SDK that introduced it. Bumped to
+         * 1.3.1 for the tunnel-ordering fix (per-session single writer) plus
+         * SSRF egress filtering, authenticated wallet/payout/token calls, and
+         * working connection-status callbacks.
          *
          * `internal` so RelayConnection can echo it in the device_info
          * handshake without re-declaring the string.
          */
-        internal const val SDK_VERSION = "1.3.0"
+        internal const val SDK_VERSION = "1.3.1"
         // Production URLs
         private const val DEFAULT_API_URL = "https://api.proxies.sx/v1"
         private const val DEFAULT_RELAY_URL = "wss://relay.proxies.sx"
@@ -90,6 +93,13 @@ class ProxiesPeerSDK private constructor(
         fun getInstance(): ProxiesPeerSDK {
             return instance ?: throw IllegalStateException("SDK not initialized. Call init() first.")
         }
+
+        /**
+         * Maps a relay connection event to an SDK [Status]. Extracted so the
+         * service→SDK status wiring (F1) is unit-testable without Android.
+         */
+        internal fun statusForConnected(connected: Boolean): Status =
+            if (connected) Status.CONNECTED else Status.CONNECTING
     }
 
     data class Config(
@@ -191,6 +201,12 @@ class ProxiesPeerSDK private constructor(
         Log.d(TAG, "Starting SDK")
         updateStatus(Status.CONNECTING)
 
+        // Bridge service connection events back to SDK status so isRunning()
+        // and onStatusChange actually reflect the relay connection.
+        PeerProxyService.connectionListener = { connected, _ ->
+            updateStatus(statusForConnected(connected))
+        }
+
         scope.launch {
             try {
                 // Register or get token for device
@@ -238,6 +254,9 @@ class ProxiesPeerSDK private constructor(
 
         // Stop earnings auto-polling
         stopEarningsPolling()
+
+        // Stop listening for service connection events
+        PeerProxyService.connectionListener = null
 
         // Stop foreground service
         PeerProxyService.stop(context)
@@ -325,6 +344,7 @@ class ProxiesPeerSDK private constructor(
             try {
                 val request = Request.Builder()
                     .url("${config.apiUrl}/peer/devices/${deviceId}/earnings")
+                    .withAuth()
                     .build()
 
                 val response = client.newCall(request).execute()
@@ -391,6 +411,7 @@ class ProxiesPeerSDK private constructor(
                 val request = Request.Builder()
                     .url("${config.apiUrl}/peer/devices/${deviceId}/wallet")
                     .put(body)
+                    .withAuth()
                     .build()
 
                 val response = client.newCall(request).execute()
@@ -417,6 +438,7 @@ class ProxiesPeerSDK private constructor(
                 val request = Request.Builder()
                     .url("${config.apiUrl}/peer/devices/${deviceId}/request-payout")
                     .post(body)
+                    .withAuth()
                     .build()
 
                 val response = client.newCall(request).execute()
@@ -456,8 +478,12 @@ class ProxiesPeerSDK private constructor(
         earningsPollingJob = scope.launch {
             Log.d(TAG, "Starting earnings auto-polling (60s interval)")
 
+            val baseInterval = 60_000L
+            val maxInterval = 15 * 60_000L
+            var failures = 0
+
             while (isActive && isPollingEnabled) {
-                try {
+                val ok = try {
                     // Use detailed earnings for full payout info
                     val detailedEarnings = getDetailedEarnings()
 
@@ -477,13 +503,18 @@ class ProxiesPeerSDK private constructor(
                     Log.d(TAG, "Earnings updated: ${detailedEarnings.totalEarnedCents} cents, " +
                                "${detailedEarnings.pendingPayoutCents} pending, " +
                                "${detailedEarnings.totalTrafficMB} MB")
+                    true
                 } catch (e: Exception) {
                     Log.e(TAG, "Earnings polling failed: ${e.message}")
-                    // Continue polling even on error
+                    false
                 }
 
-                // Wait 60 seconds before next poll
-                delay(60_000)
+                // Exponential backoff on failure (60s, 120s, ... capped at
+                // 15m) so a backend outage doesn't hammer the API every 60s.
+                if (ok) failures = 0 else failures++
+                val delayMs = if (failures == 0) baseInterval
+                    else minOf(baseInterval * (1L shl minOf(failures, 4)), maxInterval)
+                delay(delayMs)
             }
 
             Log.d(TAG, "Earnings auto-polling stopped")
@@ -521,6 +552,7 @@ class ProxiesPeerSDK private constructor(
         val request = Request.Builder()
             .url("${config.apiUrl}/peer/register")
             .post(body)
+            .withAuth()
             .build()
 
         val response = client.newCall(request).execute()
@@ -558,6 +590,7 @@ class ProxiesPeerSDK private constructor(
 
         val request = Request.Builder()
             .url("${config.apiUrl}/peer/token/$deviceId")
+            .withAuth()
             .build()
 
         val response = client.newCall(request).execute()
@@ -577,9 +610,25 @@ class ProxiesPeerSDK private constructor(
         }
     }
 
+    /**
+     * Attach credentials to a backend request. Sends the developer API key
+     * and, once available, the per-device bearer token. Wallet/payout/token
+     * endpoints MUST be authenticated server-side — the deviceId in the URL
+     * is derived from ANDROID_ID and is NOT a secret, so authenticating on
+     * deviceId alone would let anyone rewrite a device's payout wallet.
+     */
+    private fun Request.Builder.withAuth(): Request.Builder {
+        header("X-API-Key", apiKey)
+        deviceToken?.let { header("Authorization", "Bearer $it") }
+        return this
+    }
+
     private fun updateStatus(status: Status) {
         currentStatus = status
-        config.onStatusChange?.invoke(status)
+        // Status events can originate on background/relay threads; deliver the
+        // host callback on the main thread for UI safety.
+        val cb = config.onStatusChange ?: return
+        scope.launch(Dispatchers.Main) { cb.invoke(status) }
     }
 
     private fun getUniqueDeviceId(): String {

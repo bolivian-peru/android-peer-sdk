@@ -4,7 +4,10 @@ plugins {
 }
 
 android {
-    namespace = "sx.proxies.peer"
+    // Demo app namespace is distinct from the library's (sx.proxies.peer) so
+    // their generated R/BuildConfig/ViewBinding classes don't collide. The
+    // installed app identity is unchanged (applicationId below).
+    namespace = "sx.proxies.peer.app"
     compileSdk = 34
 
     defaultConfig {
@@ -46,6 +49,10 @@ android {
 }
 
 dependencies {
+    // The SDK under test — the demo app consumes the published library
+    // module rather than carrying its own (previously diverged) copy.
+    implementation(project(":sdk"))
+
     // Core Android
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")

@@ -1,0 +1,35 @@
+GOAL: Harden + complete the Proxies.sx Android Peer SDK (v1.3.0) per the audit. Fix correctness/security/reliability bugs; update docs for AI agents + developers. Work top-down. Keep public API (init/start/stop/getEarnings) unless a fix needs it; document any change. Add tests where noted.
+
+P1 CRITICAL CORRECTNESS
+C1 Tunnel corruption: handleBinaryMessage(~:696) and handleTunnelData(~:575) launch one coroutine per inbound frame on Dispatchers.IO, so writes to one tunnel OutputStream run concurrently/out of order and corrupt the stream under load. Fix: ONE writer per session via a Channel<ByteArray> drained by a single coroutine writing sequentially; never launch per frame.
+
+P2 SECURITY
+S1 Auth: getDetailedEarnings, updateWallets, requestPayout, refreshToken send NO token/X-API-Key (only guessable deviceId="psx_"+ANDROID_ID.take(16) in URL). Attach device token/API key to ALL; confirm backend rejects unauthenticated wallet/payout/token calls.
+S2 SSRF: handleTunnelConnect, handleProxyHttpRequest, PeerProxyService.handleProxyRequest dial any host:port. Resolve host and DENY loopback, link-local/169.254, RFC-1918, multicast before connecting.
+S3 Duplicate SDK: app/ does NOT depend on :sdk; ships a diverged copy storing creds in PLAINTEXT prefs (no SecurePreferences). Make app use project(":sdk") and DELETE duplicate sx.proxies.peer.* under app/.
+S4 Cleartext: network_security_config allows cleartext globally incl api/relay. Add domain-config proxies.sx cleartextTrafficPermitted=false (+cert pinning); cleartext only for proxy egress.
+S5 IP exfil: fetchPublicIp hits api.ipify.org each connect; have relay return source IP in connected ack.
+
+P3 FUNCTIONAL
+F1 isRunning() never true: service onConnected only updates notification; nothing calls SDK.updateStatus(CONNECTED). Wire service->SDK status (static cb/LocalBroadcast/StateFlow) so isRunning()+onStatusChange fire.
+F2 Traffic double-counted on proxy_request path (service handleProxyRequest AND onTrafficUpdate). Count once.
+F3 After MAX_RECONNECT_ATTEMPTS(50) it gives up forever but stays foreground+holds wakelock. Reset attempts on network-available (ConnectivityManager).
+F4 Wakelock acquired 24h only; re-acquire periodically so CPU sleep doesn't silently drop sockets.
+F5 Tunnel sockets soTimeout=0; half-open targets leak FDs. Add idle timeout + activeTunnels cap.
+
+P4 THROUGHPUT/RELIABILITY
+T1 Notification updated per 256KB read (~16x/s at 4MB/s) risks RemoteServiceException; throttle <=1/s, move accounting off notify.
+T2 handleProxyHttpRequest always replies base64 JSON even in binaryMode; encode response as binary frame.
+T3 Mark webSocket @Volatile; guard sends vs reconnect races.
+T4 Add inbound max-frame guard (mirror server 4MB cap) to prevent OOM.
+T5 LocalProxyServer drops chunked bodies (content-length only) + runBlocking on NanoHTTPD worker; handle chunked, bound concurrency.
+
+P5 HYGIENE
+L1 enable R8 (release isMinifyEnabled=false). L2 pin security-crypto off alpha06. L4 gate verbose logging (target URLs) in release. L5 earnings polling backoff; distinguish zero from error.
+
+DOCS (alongside fixes)
+README.md: add Architecture (init->register->PeerProxyService->RelayConnection->relay; binary tunnel protocol; geo-routing/relay_redirect); Security model & limitations (SSRF egress filtering, auth, plaintext-prefs fix); correct fixed claims (status callbacks now fire); document runtime perm READ_PHONE_STATE.
+Add CLAUDE.md for AI agents: module layout (:sdk=library, :app=demo MUST depend on :sdk), build/test cmds, where wire protocol lives, invariants (one writer per tunnel session; SDK_VERSION=gradle version), rule "never duplicate SDK sources into app/".
+KDoc public API + binary frame layout. Keep SDK_VERSION, gradle version, README table in sync.
+
+DONE = builds clean; C1/F1 tested; S1-S4 fixed or filed (backend confirms S1); README+CLAUDE.md updated; app/ no longer duplicates SDK.

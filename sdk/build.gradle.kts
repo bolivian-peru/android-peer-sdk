@@ -18,7 +18,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 shrinking on. The public API + dependencies are preserved by
+            // proguard-rules.pro (-keep sx.proxies.peer.**); consumers further
+            // shrink via the bundled consumer-rules.pro.
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -34,6 +37,10 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true // android.util.Log -> no-op in JVM tests
+    }
 }
 
 dependencies {
@@ -44,7 +51,12 @@ dependencies {
     // Coroutines for async operations
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // Keystore-backed encrypted SharedPreferences for credentials (v1.1.4+)
+    // Keystore-backed encrypted SharedPreferences for credentials (v1.1.4+).
+    // NOTE: the 1.1.0 line is alpha-only; there is no stable 1.1.x release.
+    // The last stable (1.0.0) predates the MasterKey.Builder API this SDK
+    // uses, so downgrading would be a source-breaking change. Pinned to the
+    // newest alpha and reviewed on each AndroidX security-crypto release —
+    // move to the stable 1.1.0/2.x as soon as one ships.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // OkHttp for HTTP client and WebSocket
@@ -73,7 +85,7 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "com.github.bolivian-peru"
                 artifactId = "android-peer-sdk"
-                version = "1.3.0"
+                version = "1.3.1"
 
                 pom {
                     name.set("Proxies.sx Peer SDK")

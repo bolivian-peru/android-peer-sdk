@@ -21,12 +21,25 @@ class PeerProxyService : Service() {
         private const val TAG = "PeerProxyService"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "peer_proxy_channel"
+        private const val NOTIFICATION_MIN_INTERVAL_MS = 1000L
+        private const val WAKELOCK_DURATION_MS = 60L * 60L * 1000L      // 1 hour
+        private const val WAKELOCK_RENEWAL_MS = 50L * 60L * 1000L       // renew before expiry
 
         const val ACTION_START = "sx.proxies.peer.action.START"
         const val ACTION_STOP = "sx.proxies.peer.action.STOP"
         const val EXTRA_DEVICE_TOKEN = "device_token"
         const val EXTRA_RELAY_URL = "relay_url"
         const val EXTRA_RELAY_PINNED = "relay_pinned"
+
+        /**
+         * Bridge from the service back to the SDK singleton (same process) so
+         * ProxiesPeerSDK can flip its status to CONNECTED/CONNECTING and fire
+         * onStatusChange. Set by ProxiesPeerSDK.start(), cleared by stop().
+         * (connected, deviceId) — deviceId is non-null only when connected.
+         */
+        @Volatile
+        @JvmStatic
+        var connectionListener: ((connected: Boolean, deviceId: String?) -> Unit)? = null
 
         fun start(context: Context, deviceToken: String, relayUrl: String, relayPinned: Boolean = false) {
             val intent = Intent(context, PeerProxyService::class.java).apply {
@@ -54,10 +67,16 @@ class PeerProxyService : Service() {
     private var relayConnection: RelayConnection? = null
     private var localProxyServer: LocalProxyServer? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wakeLockRenewalJob: kotlinx.coroutines.Job? = null
 
-    private var totalBytesIn = 0L
-    private var totalBytesOut = 0L
+    @Volatile private var totalBytesIn = 0L
+    @Volatile private var totalBytesOut = 0L
     private var isConnected = false
+
+    // Notification updates are throttled: at multi-MB/s the per-chunk traffic
+    // callback would call NotificationManager.notify ~16x/s, which the
+    // framework rate-limits and can answer with RemoteServiceException.
+    @Volatile private var lastNotificationAt = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -102,12 +121,15 @@ class PeerProxyService : Service() {
                     onConnected = { deviceId ->
                         isConnected = true
                         updateNotification("Connected as $deviceId")
+                        // Notify the SDK so isRunning()/onStatusChange work.
+                        connectionListener?.invoke(true, deviceId)
                         // Start local proxy server
                         startLocalProxy()
                     },
                     onDisconnected = {
                         isConnected = false
                         updateNotification("Disconnected")
+                        connectionListener?.invoke(false, null)
                     },
                     onProxyRequest = { request ->
                         handleProxyRequest(request)
@@ -151,6 +173,20 @@ class PeerProxyService : Service() {
     private suspend fun handleProxyRequest(request: ProxyRequest): ProxyResponse {
         return withContext(Dispatchers.IO) {
             try {
+                // SSRF guard: never let the relay drive a request at the
+                // device's own loopback, its LAN, or cloud metadata ranges.
+                val host = try { java.net.URI(request.url).host } catch (e: Exception) { null }
+                if (host == null || !sx.proxies.peer.network.EgressFilter.isAllowedTarget(host)) {
+                    return@withContext ProxyResponse(
+                        requestId = request.requestId,
+                        statusCode = 403,
+                        headers = mapOf("Content-Type" to "text/plain"),
+                        body = android.util.Base64.encodeToString(
+                            "blocked target".toByteArray(), android.util.Base64.NO_WRAP
+                        )
+                    )
+                }
+
                 // Execute HTTP request through device's network
                 val connection = java.net.URL(request.url).openConnection() as java.net.HttpURLConnection
                 connection.requestMethod = request.method
@@ -185,12 +221,10 @@ class PeerProxyService : Service() {
                     connection.errorStream?.use { it.readBytes() } ?: ByteArray(0)
                 }
 
-                // Track traffic (use actual byte count, not base64 length)
-                val requestBodyBytes = request.body?.let {
-                    try { android.util.Base64.decode(it, android.util.Base64.DEFAULT).size } catch (e: Exception) { 0 }
-                } ?: 0
-                totalBytesIn += responseBody.size
-                totalBytesOut += requestBodyBytes
+                // NOTE: traffic for this path is accounted once, by
+                // RelayConnection.handleProxyRequest via onTrafficUpdate after
+                // this returns. Do NOT increment totalBytesIn/Out here too —
+                // that double-counted every proxy_request byte.
 
                 ProxyResponse(
                     requestId = request.requestId,
@@ -282,6 +316,11 @@ class PeerProxyService : Service() {
     }
 
     private fun updateNotificationStats() {
+        // Throttle: the traffic callback fires per read (potentially many
+        // times per second). Coalesce to at most one notify per second.
+        val now = System.currentTimeMillis()
+        if (now - lastNotificationAt < NOTIFICATION_MIN_INTERVAL_MS) return
+        lastNotificationAt = now
         val mbIn = totalBytesIn / (1024.0 * 1024.0)
         val mbOut = totalBytesOut / (1024.0 * 1024.0)
         updateNotification("↓ %.2f MB | ↑ %.2f MB".format(mbIn, mbOut))
@@ -294,12 +333,32 @@ class PeerProxyService : Service() {
             "ProxiesPeer::WakeLock"
         ).apply {
             setReferenceCounted(false)
-            // Acquire for 24 hours max (will be released on service destroy)
-            acquire(24 * 60 * 60 * 1000L)
+        }
+        // Acquire with a bounded timeout and re-acquire before it expires.
+        // A single fixed-duration acquire (the old 24h lock) silently lapsed
+        // for long-running sessions, after which the CPU could sleep and drop
+        // the relay socket while the service still looked alive.
+        renewWakeLock()
+        wakeLockRenewalJob?.cancel()
+        wakeLockRenewalJob = serviceScope.launch {
+            while (isActive) {
+                delay(WAKELOCK_RENEWAL_MS)
+                renewWakeLock()
+            }
+        }
+    }
+
+    private fun renewWakeLock() {
+        try {
+            wakeLock?.acquire(WAKELOCK_DURATION_MS)
+        } catch (e: Exception) {
+            Log.w(TAG, "WakeLock renew failed: ${e.message}")
         }
     }
 
     private fun releaseWakeLock() {
+        wakeLockRenewalJob?.cancel()
+        wakeLockRenewalJob = null
         wakeLock?.let {
             if (it.isHeld) {
                 it.release()

@@ -1,6 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Allow cleartext HTTP for proxy functionality -->
+    <!--
+      Cleartext is permitted as the base policy ONLY because a peer is an
+      exit node that must be able to proxy arbitrary customer HTTP targets.
+      It is explicitly DISABLED for first-party hosts below so SDK control
+      traffic (registration, earnings, relay) can never be downgraded.
+    -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">proxies.sx</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+        <!--
+          Certificate pinning for first-party hosts. Fill in the real SPKI
+          SHA-256 pins (leaf + backup) before enabling; placeholder pins will
+          break TLS, so the block is left commented until pins are provisioned.
+
+        <pin-set expiration="2027-01-01">
+            <pin digest="SHA-256">BASE64_LEAF_SPKI_PIN==</pin>
+            <pin digest="SHA-256">BASE64_BACKUP_SPKI_PIN==</pin>
+        </pin-set>
+        -->
+    </domain-config>
+
+    <!-- Proxy egress (arbitrary customer targets) may be cleartext. -->
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />

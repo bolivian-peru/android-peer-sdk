@@ -24,14 +24,18 @@ object DebugLogger {
         listener = null
     }
 
+    // Verbose/debug lines can include proxied target URLs/hosts. Keep them in
+    // the in-memory buffer (for the in-app log view) but only emit to logcat
+    // when explicitly enabled — `adb shell setprop log.tag.ProxiesPeer DEBUG`.
+    // In a release build with default props these never reach logcat.
     fun v(message: String) {
         log("V", message)
-        Log.v(TAG, message)
+        if (Log.isLoggable(TAG, Log.VERBOSE)) Log.v(TAG, message)
     }
 
     fun d(message: String) {
         log("D", message)
-        Log.d(TAG, message)
+        if (Log.isLoggable(TAG, Log.DEBUG)) Log.d(TAG, message)
     }
 
     fun i(message: String) {

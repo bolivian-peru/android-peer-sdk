@@ -28,8 +28,10 @@
         android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="34">
 
+        <!-- Absolute class name: the activity lives in the library's package
+             (sx.proxies.peer.ui), not this module's namespace. -->
         <activity
-            android:name=".ui.MainActivity"
+            android:name="sx.proxies.peer.ui.MainActivity"
             android:exported="true"
             android:launchMode="singleTop">
             <intent-filter>
@@ -38,11 +40,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Foreground service for proxy -->
-        <service
-            android:name=".service.PeerProxyService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
+        <!-- The PeerProxyService is declared by the :sdk library manifest and
+             merged in automatically; no need to redeclare it here. -->
 
     </application>
 

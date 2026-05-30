@@ -8,9 +8,18 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 
 ---
 
-> ## ⚡ Use **v1.3.0** (released 2026-05-21) — multi-region relay routing
+> ## ⚡ Use **v1.3.1** — correctness & security hardening
 >
-> If you are integrating today, use `v1.3.0`. Keeps v1.2.1's binary tunnel protocol + compression and adds **server-controlled relay routing** so each peer connects to the geographically nearest relay instead of the hardcoded EU host:
+> If you are integrating today, use `v1.3.1`. It is a drop-in patch over v1.3.0 (same API, same wire format, same geo-routing) that fixes a tunnel data-corruption bug and closes several security gaps:
+>
+> - **Tunnel ordering fix (critical).** Inbound tunnel bytes are now written by a single per-session writer. v1.3.0 and earlier dispatched each frame to a thread pool, so writes for one connection could race and reorder — corrupting TLS/HTTP streams under load. Upgrade is strongly recommended.
+> - **SSRF egress filtering.** Peers refuse to proxy to loopback, RFC-1918/LAN, link-local (incl. `169.254.169.254` cloud metadata), and CGNAT targets.
+> - **Authenticated account calls.** Wallet, payout, token-refresh, and earnings requests now send the API key + device token (previously authenticated on the non-secret `deviceId` alone).
+> - **Working status callbacks.** `onStatusChange(CONNECTED)` / `isRunning()` now actually fire once the relay connects (the service→SDK status bridge was missing in v1.3.0).
+> - **Reliability:** idle-tunnel reaper + tunnel cap, network-aware reconnect (no more permanent give-up after an outage), periodic wake-lock renewal, throttled notification updates, inbound frame-size cap, earnings-poll backoff.
+> - **First-party TLS hardened.** Cleartext is disabled for `*.proxies.sx` (control traffic); cleartext stays available only for arbitrary proxy egress.
+>
+> v1.3.0 added **server-controlled relay routing** so each peer connects to the geographically nearest relay instead of the hardcoded EU host:
 >
 > - **Geo-assigned relay at registration** — the `/peer/register` response now carries a `relay` field (US/LATAM → `wss://relay-us.proxies.sx`, everyone else → `wss://relay.proxies.sx`). The SDK connects to that relay and persists it. A device in Brazil or the US no longer tunnels every byte across the Atlantic — which was collapsing single-stream throughput to ~0.3 MB/s regardless of the device's real uplink.
 > - **Runtime relay redirect** — after advertising `supportsRelayRedirect: true` in `device_info`, the relay can send `relay_redirect` to migrate the peer to a nearer relay at runtime. The fleet auto-migrates when a new region comes online — no app update needed. Guards: only `*.proxies.sx` wss targets are honored, a 60s anti-flap interval prevents ping-ponging, and an explicit `relayUrl` operator pin disables redirects entirely.
@@ -22,10 +31,12 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 > | v1.1.x | 70–250 | ~480 ms | EU only (hardcoded) |
 > | v1.2.0 | 600–1500 | ~30 ms | EU only (hardcoded) |
 > | v1.2.1 | 1500–4000 | ~30 ms | EU only (hardcoded) |
-> | **v1.3.0** | **1500–4000** | ~30 ms | **nearest region (geo-routed)** |
+> | v1.3.0 | 1500–4000 | ~30 ms | nearest region (geo-routed) |
+> | **v1.3.1** | **1500–4000** | ~30 ms | **nearest region (geo-routed)** |
 >
 > Older versions:
 >
+> - **v1.3.0** — multi-region relay routing. Has the tunnel-ordering bug fixed in v1.3.1; prefer 1.3.1.
 > - **v1.2.1** — compression + 256 KB frames. Stable, but pins every peer to the EU relay.
 > - **v1.2.0** — binary tunnel protocol. Stable. Same wire format as v1.2.1/v1.3.0 — interoperable.
 > - **v1.1.4** — encrypted credential storage. Stable but slow JSON+base64 path.
@@ -33,15 +44,15 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 > - **v1.1.0 – v1.1.2** — stale `sdkVersion` string. Avoid.
 > - **v1.0.x** — tunnel-forwarding regression. Customer requests time out. Avoid.
 >
-> Bump to 1.3.0 with a 1-line gradle change:
+> Bump to 1.3.1 with a 1-line gradle change:
 >
 > ```kotlin
-> implementation("com.github.bolivian-peru:android-peer-sdk:1.3.0")
+> implementation("com.github.bolivian-peru:android-peer-sdk:1.3.1")
 > ```
 >
-> The API surface is **unchanged** — same `ProxiesPeerSDK.init / start / stop / getEarnings`. Relay routing is fully automatic; `Config.relayUrl` stays optional (leave unset to geo-route). The upgrade is transparent.
+> The API surface is **unchanged** — same `ProxiesPeerSDK.init / start / stop / getEarnings`. Relay routing is fully automatic; `Config.relayUrl` stays optional (leave unset to geo-route). The upgrade is transparent, and `onStatusChange`/`isRunning()` now report `CONNECTED` correctly.
 >
-> Commit history: [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned), v1.1.4 (encrypted credential storage), [`b4e315fc`](https://github.com/bolivian-peru/android-peer-sdk/commit/b4e315fc) (v1.2.0 — binary tunnel protocol), v1.2.1 (compression + larger frames + frame size cap), **v1.3.0 (multi-region relay routing — this release)**.
+> Commit history: [`c684da28`](https://github.com/bolivian-peru/android-peer-sdk/commit/c684da28) (v1.1.3 — sdkVersion string aligned), v1.1.4 (encrypted credential storage), [`b4e315fc`](https://github.com/bolivian-peru/android-peer-sdk/commit/b4e315fc) (v1.2.0 — binary tunnel protocol), v1.2.1 (compression + larger frames + frame size cap), v1.3.0 (multi-region relay routing), **v1.3.1 (tunnel-ordering fix + security hardening — this release)**.
 
 ---
 
@@ -79,7 +90,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.3.0")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.3.1")
 }
 ```
 
@@ -87,9 +98,19 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.3.0'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.3.1'
 }
 ```
+
+### Requirements
+
+| | |
+|---|---|
+| Min SDK | API 24 (Android 7.0) |
+| Compile / target SDK | API 34 |
+| Language | Kotlin (Java-interop via `@JvmStatic` entry points) |
+| Runtime | Runs as a foreground service (`dataSync` type) with a wake lock |
+| Transitive deps | OkHttp, Gson, NanoHTTPD, AndroidX security-crypto, coroutines (pulled in automatically) |
 
 ## Quick Start
 
@@ -147,6 +168,97 @@ lifecycleScope.launch {
 }
 ```
 
+## Architecture
+
+```
+ProxiesPeerSDK.init() ──► register device (POST /v1/peer/register)
+        │                   └─► geo-assigned relay URL (persisted)
+        ▼
+ProxiesPeerSDK.start() ──► PeerProxyService (foreground service, wake lock)
+                                │
+                                ├─► RelayConnection ──WSS──► nearest relay
+                                │       │
+                                │       ├─ control msgs (JSON text): connected,
+                                │       │  proxy_request, tunnel_connect/open/
+                                │       │  data/close, relay_redirect, heartbeat
+                                │       │
+                                │       └─ tunnel data (binary frames) ⇄ target
+                                │          via one ordered writer per session
+                                │
+                                └─► LocalProxyServer (127.0.0.1:8888)
+```
+
+Data flow in one line: **relay → RelayConnection → target socket** (customer traffic the device performs on its own network), with bytes streamed back the same way. `LocalProxyServer` is a localhost-only HTTP entry point (bound to `127.0.0.1`, never exposed off-device) for host apps that want to route their *own* requests through the same relay path.
+
+- **Registration** returns a per-device token and a geo-assigned relay
+  (`relay-us` for US/LATAM, EU otherwise). The relay can later migrate the
+  peer with `relay_redirect` (only to `*.proxies.sx`, ≥60s apart, disabled when
+  you pin `Config.relayUrl`).
+- **Binary tunnel protocol** (v1.2.0+): tunnel payloads ship as raw WebSocket
+  binary frames — `[type][sidLen][sessionId][payload]` — instead of base64+JSON,
+  for 4–10× throughput. The codec lives in `BinaryTunnelCodec`.
+- **Ordering guarantee** (v1.3.1): each tunnel session has exactly one writer
+  coroutine, so inbound bytes reach the target socket in the order the relay
+  sent them.
+- **Credentials** (device id/token) are stored in Keystore-backed
+  `EncryptedSharedPreferences` (v1.1.4+).
+
+The library is the `:sdk` Gradle module; the `:app` module is a demo harness
+that depends on it. See [CLAUDE.md](CLAUDE.md) for the developer/agent map.
+
+### Wire protocol reference
+
+The peer↔relay link is a single WebSocket (`wss://…proxies.sx`). Control
+messages are JSON text `{ "type": …, "payload": … }`; tunnel data uses raw
+binary frames once the relay acks binary mode.
+
+| Direction | `type` | Purpose |
+|---|---|---|
+| relay → peer | `connected` | Handshake ack; carries `deviceId` and observed `ip`. Enables binary mode. |
+| relay → peer | `proxy_request` | One-shot HTTP request to perform and return. |
+| relay → peer | `proxy_http_request` | HTTP request answered over a tunnel session. |
+| relay → peer | `tunnel_connect` | Open a TCP tunnel to `host:port` (CONNECT-style). |
+| relay → peer | `tunnel_data` / `tunnel_close` | Bytes for / close of a tunnel (JSON fallback). |
+| relay → peer | `relay_redirect` | Migrate to a nearer relay (`*.proxies.sx` only, ≥60 s apart). |
+| peer → relay | `device_info` | Country, carrier, `protocol: "binary-v1"`, `supportsRelayRedirect`, `sdkVersion`. |
+| peer → relay | `heartbeat` | Keep-alive every 30 s. |
+| peer → relay | `tunnel_data` / `tunnel_closed` | Bytes from / close of a tunnel. |
+
+**Binary tunnel frame** (`BinaryTunnelCodec`, byte-for-byte with the relay):
+
+```
+┌────────┬─────────┬──────────────────┬───────────────────────┐
+│  [0]   │   [1]   │   [2 .. 2+L)      │   [2+L .. end)         │
+│  type  │  sidLen │   sessionId (L)   │   payload (raw bytes)  │
+└────────┴─────────┴──────────────────┴───────────────────────┘
+  type:    0x01 = tunnel_data, 0x03 = tunnel_close
+  sidLen:  UTF-8 byte length of sessionId (≤ 255)
+```
+
+## Security model & limitations
+
+A peer is an **exit node for third-party traffic**. Understand this before shipping:
+
+- **Egress filtering.** The SDK refuses to proxy to loopback, RFC-1918/LAN,
+  link-local (incl. `169.254.169.254` cloud metadata), CGNAT, any-local, and
+  multicast addresses (`EgressFilter`). This prevents the relay or a malicious
+  customer request from using the device as an SSRF pivot into the user's home
+  or corporate network. It does **not** make the device safe to run on a
+  sensitive/internal network — treat a peer like any open egress proxy.
+- **Account API auth.** Wallet, payout, token, and earnings calls send your
+  API key and the device token. The `deviceId` (derived from `ANDROID_ID`) is
+  **not** a secret and must never be the sole authenticator server-side.
+- **Transport.** Control/API traffic to `*.proxies.sx` is TLS-only (cleartext
+  disabled in the network security config). Certificate pinning hooks are
+  present but commented until pins are provisioned. Cleartext remains permitted
+  for arbitrary proxy egress (required for HTTP customer targets).
+- **Consent & legality.** Always obtain explicit, informed user consent (see
+  *User consent* below). Operating an exit node may carry legal/contractual
+  obligations in some jurisdictions and on some carrier networks.
+- **Credential storage.** Sensitive values use encrypted prefs; never log them.
+  Verbose/debug logcat (which can include proxied target URLs) is gated behind
+  `Log.isLoggable(...)` and off by default in release builds.
+
 ## Dashboard & Marketplace
 
 Once your device is connected, manage it from the farmer dashboard:
@@ -166,11 +278,11 @@ Once your device is connected, manage it from the farmer dashboard:
 | Uptime | Minimum 1 hour online |
 | Quality | Score must be >= 50/100 |
 
-## IP Rotation (planned — not in v1.1.x)
+## IP Rotation (planned — not shipped as of v1.3.1)
 
-SDK-side IP rotation via accessibility-service-driven airplane-mode toggle is on the roadmap but **does not ship in v1.1.x**. The classes `AirplaneModeAccessibilityService`, `IPRotationManager` and the methods `sdk.rotateIP()`, `sdk.isIPRotationAvailable()`, `sdk.rotateIPAsync()`, `sdk.openIPRotationSettings()` are not present in the artifact — earlier README revisions documented them in error.
+SDK-side IP rotation via accessibility-service-driven airplane-mode toggle is on the roadmap but **does not ship in any 1.x release, including v1.3.1**. The classes `AirplaneModeAccessibilityService`, `IPRotationManager` and the methods `sdk.rotateIP()`, `sdk.isIPRotationAvailable()`, `sdk.rotateIPAsync()`, `sdk.openIPRotationSettings()` are not present in the artifact — earlier README revisions documented them in error.
 
-The backend route `POST /v1/peer/devices/:id/rotate` exists but returns HTTP 501 for v1.1.x clients. The feature is tracked under Phase 3b of the SDK production-readiness plan and will land in a future major version.
+The backend route `POST /v1/peer/devices/:id/rotate` exists but returns HTTP 501 for 1.x clients. The feature is tracked under Phase 3b of the SDK production-readiness plan and will land in a future major version.
 
 ## Required Permissions
 
@@ -179,12 +291,21 @@ The SDK automatically adds these permissions via manifest merge:
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 <uses-permission android:name="android.permission.WAKE_LOCK" />
+<uses-permission android:name="android.permission.READ_PHONE_STATE" />
 ```
 
-**Note:** For Android 13+, you'll need to request POST_NOTIFICATIONS permission at runtime.
+**Runtime permissions you must request yourself:**
+
+- **`READ_PHONE_STATE`** (dangerous permission) — used to read the carrier
+  name and network country for relay routing/quality. If you don't request it
+  at runtime, the SDK silently falls back to the device locale (less accurate
+  country, carrier reported as `Unknown`). The SDK still works without it.
+- **`POST_NOTIFICATIONS`** (Android 13+) — required for the foreground-service
+  notification to be visible. Request at runtime.
 
 ## Best Practices
 
@@ -248,7 +369,11 @@ IP type is classified server-side via ASN lookup. Earnings accumulate per-GB and
 | `stop()` | Stop sharing service |
 | `isRunning()` | Check if service is running |
 | `getStatus()` | Get current status enum |
-| `getEarnings()` | Get earnings (suspend function) |
+| `getEarnings()` | Get earnings summary (suspend) |
+| `getDetailedEarnings()` | Get earnings + payout/wallet detail (suspend) |
+| `refreshEarningsNow()` | Force an immediate earnings refresh |
+| `updateWallets(usdt, btc, sol)` | Set payout wallet addresses (suspend) |
+| `requestPayout(currency)` | Request a payout (suspend) |
 
 ## Status Values
 
@@ -263,30 +388,30 @@ IP type is classified server-side via ASN lookup. Earnings accumulate per-GB and
 
 ```kotlin
 ProxiesPeerSDK.Config(
-    // Link earnings to your user system
+    // Link earnings to your user system (optional)
     userId = "user-123",
 
-    // Status change callback
+    // Status change callback (delivered on the main thread)
     onStatusChange = { status -> },
 
-    // Earnings update callback
+    // Earnings update callback (auto-polled ~every 60s)
     onEarningsUpdate = { earnings -> },
 
     // Operator relay pin (optional). Leave unset to let the platform
     // geo-route this device to the nearest relay and migrate it at runtime.
-    // Set this ONLY to force a specific relay (disables geo-routing).
-    relayUrl = "wss://relay.proxies.sx",
+    // Set this ONLY to force a specific relay (disables geo-routing AND
+    // ignores all runtime relay_redirects).
+    relayUrl = null,
 
-    // Maximum bandwidth to share (MB per hour)
-    maxBandwidthMBPerHour = 100,
-
-    // Only share when charging
-    onlyWhenCharging = false,
-
-    // Only share on mobile data (not WiFi)
-    mobileDataOnly = true
+    // Override the API base URL (optional; defaults to https://api.proxies.sx/v1)
+    apiUrl = "https://api.proxies.sx/v1",
 )
 ```
+
+> The full set of `Config` fields is exactly: `apiUrl`, `relayUrl`, `userId`,
+> `onEarningsUpdate`, `onStatusChange`. (Earlier README revisions listed
+> `maxBandwidthMBPerHour` / `onlyWhenCharging` / `mobileDataOnly` — those have
+> never existed in the artifact.)
 
 ## Other Integration Paths
 
@@ -339,6 +464,32 @@ See the `/app` module for a complete sample application demonstrating:
 - Displaying earnings
 - Handling status changes
 - Foreground notification
+
+## Repository layout
+
+For contributors and AI agents working in this repo. The deeper map,
+build/test commands, and the invariants you must not break live in
+[CLAUDE.md](CLAUDE.md).
+
+| Path | What it is |
+|---|---|
+| `sdk/` | **The published library** (source of truth). |
+| `sdk/src/main/java/sx/proxies/peer/ProxiesPeerSDK.kt` | Public API + registration / earnings / status. |
+| `…/service/PeerProxyService.kt` | Foreground service; hosts the relay connection. |
+| `…/network/RelayConnection.kt` | WebSocket client + protocol + tunnels + reconnect. |
+| `…/network/BinaryTunnelCodec.kt` | Pure binary-frame encode/decode (unit-tested). |
+| `…/network/EgressFilter.kt` | SSRF guard (blocks loopback/LAN/metadata). |
+| `…/network/LocalProxyServer.kt` | Localhost-only HTTP entry point. |
+| `…/util/SecurePreferences.kt` | Keystore-encrypted credential storage. |
+| `sdk/src/test/` | JVM unit tests (codec, egress, status mapping). |
+| `app/` | Demo harness app — **depends on `:sdk`, never copies it**. |
+
+```sh
+# Build + test (JDK 17 + Android SDK on PATH)
+./gradlew :sdk:testDebugUnitTest    # unit tests
+./gradlew :sdk:assembleRelease      # library AAR
+./gradlew :app:assembleDebug        # demo app
+```
 
 ## ProGuard
 

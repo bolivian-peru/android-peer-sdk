@@ -1,6 +1,9 @@
 package sx.proxies.peer.network
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkRequest
 import android.os.Build
 import android.telephony.TelephonyManager
 import android.util.Log
@@ -8,6 +11,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import kotlinx.coroutines.*
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.channels.Channel
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -90,6 +94,40 @@ class RelayConnection(
         // the kernel absorbs more bytes between our reads. Kept under
         // typical mobile carrier socket buffer caps (~512 KB).
         private const val TUNNEL_SOCKET_RECV_BUFFER_BYTES = 262_144
+
+        // Defensive cap on inbound WS frames (the relay caps tunnel frames
+        // at 4 MB server-side). A frame larger than this is treated as
+        // corrupt/hostile and dropped so a single message can't OOM the
+        // device. Small slack added for the binary frame header.
+        private const val MAX_INBOUND_FRAME_BYTES = 4 * 1024 * 1024 + 1024
+
+        // Hard cap on simultaneously open device→target tunnels. Prevents a
+        // misbehaving/compromised relay from exhausting FDs/threads on the
+        // device. New tunnel_connect beyond this is refused.
+        private const val MAX_ACTIVE_TUNNELS = 256
+
+        // Idle tunnel reaper: a tunnel with no traffic in either direction
+        // for this long is closed. Guards against half-open peers that never
+        // send a FIN (soTimeout is 0, so the read loop would otherwise block
+        // forever and leak the socket).
+        private const val TUNNEL_IDLE_TIMEOUT_MS = 5 * 60 * 1000L
+        private const val TUNNEL_REAPER_INTERVAL_MS = 60 * 1000L
+    }
+
+    /**
+     * One open device→target tunnel. All writes to [socket] go through
+     * [writes], drained by exactly one [writerJob] coroutine so inbound
+     * frames are written in the order the relay sent them. Launching a
+     * write coroutine per frame (the pre-v1.3.1 behavior) let writes for
+     * the same session race on Dispatchers.IO and interleave/reorder bytes,
+     * corrupting the TCP stream under load.
+     */
+    private class TunnelSession(
+        val socket: Socket,
+        val writes: Channel<ByteArray>,
+        val writerJob: Job,
+    ) {
+        @Volatile var lastActivityAt: Long = 0L
     }
 
     // WebSocket client. OkHttp 4.x auto-negotiates the permessage-deflate
@@ -111,7 +149,9 @@ class RelayConnection(
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private var webSocket: WebSocket? = null
+    // Read from multiple IO threads (send paths) and written on connect/
+    // reconnect — volatile so a send never observes a stale socket.
+    @Volatile private var webSocket: WebSocket? = null
     private val gson = Gson()
     private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -123,6 +163,15 @@ class RelayConnection(
     private var publicIp: String = ""
     @Volatile private var lastRedirectAt = 0L
 
+    // Network monitoring: when connectivity returns after an outage we reset
+    // the backoff counter and reconnect immediately, instead of staying dead
+    // after MAX_RECONNECT_ATTEMPTS is exhausted (a foreground service holding
+    // a wakelock but never reconnecting is the worst outcome).
+    private val connectivityManager by lazy {
+        context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+    }
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
     // Flipped to true after the relay sends back its `connected` ack,
     // which is the platform's signal that our `protocol: "binary-v1"`
     // advertisement was processed and the relay will accept binary
@@ -133,14 +182,17 @@ class RelayConnection(
     // Pending response callbacks
     private val pendingResponses = ConcurrentHashMap<String, CompletableDeferred<ProxyResponse>>()
 
-    // Active tunnel connections (sessionId -> Socket)
-    private val activeTunnels = ConcurrentHashMap<String, Socket>()
+    // Active tunnel connections (sessionId -> session with its single writer)
+    private val activeTunnels = ConcurrentHashMap<String, TunnelSession>()
+
+    private fun session(sessionId: String): TunnelSession? = activeTunnels[sessionId]
 
     fun connect() {
         // Recreate scope if it was cancelled by disconnect()
         if (!scope.isActive) {
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         }
+        registerNetworkCallback()
         // Close any existing connection before reconnecting
         webSocket?.close(1000, "Reconnecting")
         webSocket = null
@@ -159,11 +211,14 @@ class RelayConnection(
                 isConnected = true
                 reconnectAttempt = 0  // Reset on successful connection
 
-                // Fetch public IP first, then send device info
+                // Send device info immediately. We no longer call a
+                // third-party IP-echo service (api.ipify.org) here: the relay
+                // sees our real source IP and echoes it back in the
+                // `connected` ack (stored in publicIp for the next handshake).
                 scope.launch {
-                    fetchPublicIp()
                     sendDeviceInfo()
                     startHeartbeat()
+                    startTunnelReaper()
                 }
             }
 
@@ -196,24 +251,59 @@ class RelayConnection(
         })
     }
 
-    private suspend fun fetchPublicIp() {
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        val cm = connectivityManager ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                // Connectivity returned. If we're meant to be up but aren't,
+                // reset backoff and reconnect now rather than waiting out the
+                // exponential delay (or staying dead past the attempt cap).
+                if (shouldReconnect && !isConnected && !isReconnecting) {
+                    DebugLogger.i("Network available — resetting backoff and reconnecting")
+                    reconnectAttempt = 0
+                    connect()
+                }
+            }
+        }
         try {
-            val request = Request.Builder()
-                .url("https://api.ipify.org?format=json")
+            val request = NetworkRequest.Builder()
+                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build()
+            cm.registerNetworkCallback(request, callback)
+            networkCallback = callback
+        } catch (e: Exception) {
+            DebugLogger.w("Failed to register network callback: ${e.message}")
+        }
+    }
 
-            withContext(Dispatchers.IO) {
-                httpClient.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) {
-                        val body = response.body?.string()
-                        val json = gson.fromJson(body, JsonObject::class.java)
-                        publicIp = json.get("ip")?.asString ?: ""
-                        DebugLogger.i("Public IP: $publicIp")
+    private fun unregisterNetworkCallback() {
+        val cm = connectivityManager
+        val callback = networkCallback
+        if (cm != null && callback != null) {
+            try { cm.unregisterNetworkCallback(callback) } catch (_: Exception) {}
+        }
+        networkCallback = null
+    }
+
+    /**
+     * Periodically close tunnels that have seen no traffic for
+     * [TUNNEL_IDLE_TIMEOUT_MS]. Because tunnel sockets use soTimeout=0, a
+     * half-open peer (no FIN, no data) would otherwise block the read loop
+     * forever and leak the socket/thread.
+     */
+    private fun startTunnelReaper() {
+        scope.launch {
+            while (isConnected) {
+                delay(TUNNEL_REAPER_INTERVAL_MS)
+                val now = System.currentTimeMillis()
+                activeTunnels.forEach { (sessionId, session) ->
+                    if (now - session.lastActivityAt > TUNNEL_IDLE_TIMEOUT_MS) {
+                        DebugLogger.d("Reaping idle tunnel: $sessionId")
+                        closeTunnel(sessionId)
                     }
                 }
             }
-        } catch (e: Exception) {
-            DebugLogger.e("Failed to get public IP: ${e.message}")
         }
     }
 
@@ -252,6 +342,12 @@ class RelayConnection(
             when (type) {
                 "connected" -> {
                     deviceId = payload?.get("deviceId")?.asString
+                    // Prefer the source IP the relay observed for us — it is
+                    // authoritative and avoids a round-trip to a third-party
+                    // IP-echo service (api.ipify.org) on every connect.
+                    payload?.get("ip")?.asString?.let {
+                        if (it.isNotEmpty()) publicIp = it
+                    }
                     // Relay has processed our `device_info` advertising
                     // `protocol: "binary-v1"` — safe to start sending
                     // tunnel_data as binary frames. Until this flips,
@@ -410,6 +506,17 @@ class RelayConnection(
 
             DebugLogger.d("HTTP proxy request: $method $url (session: $sessionId)")
 
+            // SSRF guard: reject internal/loopback/link-local targets.
+            val targetHost = try { java.net.URI(url).host } catch (e: Exception) { null }
+            if (targetHost == null || !EgressFilter.isAllowedTarget(targetHost)) {
+                DebugLogger.w("Refusing HTTP proxy to blocked host: $targetHost")
+                sendTunnelData(
+                    sessionId,
+                    "HTTP/1.1 403 Forbidden\r\n\r\nblocked target".toByteArray(),
+                )
+                return@launch
+            }
+
             try {
                 val requestBuilder = Request.Builder()
                     .url(url)
@@ -451,11 +558,10 @@ class RelayConnection(
                 val headerBytes = fullResponse.toString().toByteArray()
                 val combined = headerBytes + responseBody
 
-                // Send response back through tunnel
-                sendMessage("tunnel_data", mapOf(
-                    "sessionId" to sessionId,
-                    "data" to android.util.Base64.encodeToString(combined, android.util.Base64.NO_WRAP)
-                ))
+                // Send response back through tunnel (binary frame when the
+                // relay has ack'd binary mode — same hot-path win as the
+                // CONNECT-tunnel read loop).
+                sendTunnelData(sessionId, combined)
 
                 // Track traffic
                 onTrafficUpdate(
@@ -468,11 +574,25 @@ class RelayConnection(
             } catch (e: Exception) {
                 DebugLogger.e("HTTP proxy error: ${e.message}", e)
                 val errorResponse = "HTTP/1.1 502 Bad Gateway\r\n\r\n${e.message}"
-                sendMessage("tunnel_data", mapOf(
-                    "sessionId" to sessionId,
-                    "data" to android.util.Base64.encodeToString(errorResponse.toByteArray(), android.util.Base64.NO_WRAP)
-                ))
+                sendTunnelData(sessionId, errorResponse.toByteArray())
             }
+        }
+    }
+
+    /**
+     * Send tunnel payload back to the relay. Uses a raw binary frame once
+     * the relay has acknowledged binary mode (zero base64/JSON overhead),
+     * falling back to the legacy base64 JSON envelope otherwise.
+     */
+    private fun sendTunnelData(sessionId: String, data: ByteArray) {
+        val ws = webSocket
+        if (binaryMode && ws != null) {
+            ws.send(encodeBinaryTunnelFrame(MSG_TUNNEL_DATA, sessionId, data, data.size))
+        } else {
+            sendMessage("tunnel_data", mapOf(
+                "sessionId" to sessionId,
+                "data" to android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP)
+            ))
         }
     }
 
@@ -485,6 +605,26 @@ class RelayConnection(
         val port = payload.get("port")?.asInt ?: 443
 
         DebugLogger.d("Tunnel connect: $host:$port (session: $sessionId)")
+
+        // SSRF guard: never let the relay point a peer at the device's own
+        // loopback, its LAN, or cloud link-local/metadata ranges.
+        if (!EgressFilter.isAllowedTarget(host)) {
+            DebugLogger.w("Refusing tunnel to blocked host: $host")
+            sendMessage("tunnel_closed", mapOf(
+                "sessionId" to sessionId,
+                "error" to "blocked target"
+            ))
+            return
+        }
+        // Cap simultaneously open tunnels so a hostile relay can't exhaust FDs.
+        if (activeTunnels.size >= MAX_ACTIVE_TUNNELS) {
+            DebugLogger.w("Refusing tunnel: active tunnel cap ($MAX_ACTIVE_TUNNELS) reached")
+            sendMessage("tunnel_closed", mapOf(
+                "sessionId" to sessionId,
+                "error" to "tunnel cap reached"
+            ))
+            return
+        }
 
         scope.launch(Dispatchers.IO) {
             try {
@@ -503,9 +643,30 @@ class RelayConnection(
                 try { socket.tcpNoDelay = true } catch (_: Exception) {}
                 try { socket.receiveBufferSize = TUNNEL_SOCKET_RECV_BUFFER_BYTES } catch (_: Exception) {}
                 socket.connect(InetSocketAddress(host, port), 30000)
-                socket.soTimeout = 0 // No read timeout for tunnel
+                socket.soTimeout = 0 // No read timeout for tunnel; idle reaper handles half-open
 
-                activeTunnels[sessionId] = socket
+                // One writer per session: a single coroutine drains `writes`
+                // and writes to the socket in arrival order. Inbound frames
+                // enqueue here instead of each launching its own write, which
+                // would let writes for one session race and corrupt the stream.
+                val writes = Channel<ByteArray>(Channel.UNLIMITED)
+                val writerJob = launch(Dispatchers.IO) {
+                    try {
+                        val out = socket.getOutputStream()
+                        for (chunk in writes) {
+                            out.write(chunk)
+                            out.flush()
+                            session(sessionId)?.lastActivityAt = System.currentTimeMillis()
+                            onTrafficUpdate(chunk.size.toLong(), 0)
+                        }
+                    } catch (e: Exception) {
+                        DebugLogger.d("Tunnel writer ended: ${e.message}")
+                        closeTunnel(sessionId)
+                    }
+                }
+                val tunnel = TunnelSession(socket, writes, writerJob)
+                tunnel.lastActivityAt = System.currentTimeMillis()
+                activeTunnels[sessionId] = tunnel
 
                 DebugLogger.i("Tunnel connected to $host:$port")
 
@@ -517,6 +678,7 @@ class RelayConnection(
                         while (!socket.isClosed && socket.isConnected) {
                             val bytesRead = input.read(buffer)
                             if (bytesRead == -1) break
+                            tunnel.lastActivityAt = System.currentTimeMillis()
 
                             // Hot path. After register, `binaryMode` is true →
                             // we encode directly into a raw WS binary frame
@@ -566,22 +728,32 @@ class RelayConnection(
         val sessionId = payload.get("sessionId")?.asString ?: return
         val dataBase64 = payload.get("data")?.asString ?: return
 
-        val socket = activeTunnels[sessionId]
-        if (socket == null || socket.isClosed) {
+        val session = activeTunnels[sessionId]
+        if (session == null || session.socket.isClosed) {
             DebugLogger.d("Tunnel data for closed session: $sessionId")
             return
         }
 
-        scope.launch(Dispatchers.IO) {
-            try {
-                val data = android.util.Base64.decode(dataBase64, android.util.Base64.DEFAULT)
-                socket.getOutputStream().write(data)
-                socket.getOutputStream().flush()
-                onTrafficUpdate(data.size.toLong(), 0)
-            } catch (e: Exception) {
-                DebugLogger.e("Tunnel write error: ${e.message}", e)
-                closeTunnel(sessionId)
-            }
+        val data = try {
+            android.util.Base64.decode(dataBase64, android.util.Base64.DEFAULT)
+        } catch (e: Exception) {
+            DebugLogger.e("Tunnel data decode error: ${e.message}")
+            return
+        }
+        // Enqueue for the session's single ordered writer (see TunnelSession).
+        enqueueWrite(sessionId, session, data)
+    }
+
+    /**
+     * Hand a chunk to the session's single writer. Ordering is preserved
+     * because callers enqueue from the (single-threaded) WS reader and the
+     * channel is FIFO. trySend never blocks; it only fails if the writer
+     * has been closed, in which case the session is already going away.
+     */
+    private fun enqueueWrite(sessionId: String, session: TunnelSession, data: ByteArray) {
+        val result = session.writes.trySend(data)
+        if (result.isFailure) {
+            DebugLogger.d("Dropping write for closing session: $sessionId")
         }
     }
 
@@ -592,13 +764,16 @@ class RelayConnection(
     }
 
     private fun closeTunnel(sessionId: String) {
-        val socket = activeTunnels.remove(sessionId)
-        socket?.let {
-            try {
-                it.close()
-            } catch (e: Exception) {
-                // Ignore close errors
-            }
+        val session = activeTunnels.remove(sessionId) ?: run {
+            // Already closed by another path; don't double-notify the relay.
+            return
+        }
+        session.writes.close()
+        session.writerJob.cancel()
+        try {
+            session.socket.close()
+        } catch (e: Exception) {
+            // Ignore close errors
         }
         sendMessage("tunnel_closed", mapOf("sessionId" to sessionId))
     }
@@ -659,16 +834,7 @@ class RelayConnection(
         sessionId: String,
         payload: ByteArray,
         payloadLen: Int = payload.size,
-    ): ByteString {
-        val sidBytes = sessionId.toByteArray(Charsets.UTF_8)
-        require(sidBytes.size <= 255) { "sessionId too long for binary frame" }
-        val out = ByteArray(2 + sidBytes.size + payloadLen)
-        out[0] = type
-        out[1] = sidBytes.size.toByte()
-        System.arraycopy(sidBytes, 0, out, 2, sidBytes.size)
-        System.arraycopy(payload, 0, out, 2 + sidBytes.size, payloadLen)
-        return out.toByteString()
-    }
+    ): ByteString = BinaryTunnelCodec.encode(type, sessionId, payload, payloadLen).toByteString()
 
     /**
      * Decodes inbound binary tunnel_data / tunnel_close frames from the
@@ -677,33 +843,22 @@ class RelayConnection(
      */
     private fun handleBinaryMessage(bytes: ByteString) {
         try {
-            val buf = bytes.toByteArray()
-            if (buf.size < 2) return
-            val type = buf[0]
-            val sidLen = buf[1].toInt() and 0xFF
-            if (buf.size < 2 + sidLen) return
-            val sessionId = String(buf, 2, sidLen, Charsets.UTF_8)
+            // Defensive cap: a frame larger than the relay's server-side
+            // limit is corrupt or hostile — drop it rather than allocate.
+            if (bytes.size > MAX_INBOUND_FRAME_BYTES) {
+                DebugLogger.w("Dropping oversized binary frame: ${bytes.size} bytes")
+                return
+            }
+            val frame = BinaryTunnelCodec.decode(bytes.toByteArray()) ?: return
+            val sessionId = frame.sessionId
 
-            when (type) {
+            when (frame.type) {
                 MSG_TUNNEL_DATA -> {
-                    val socket = activeTunnels[sessionId]
-                    if (socket == null || socket.isClosed) return
-                    // Slice payload without an extra copy where possible:
-                    // OutputStream.write(buf, off, len) writes a window
-                    // into our existing buffer.
-                    val payloadOff = 2 + sidLen
-                    val payloadLen = buf.size - payloadOff
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            val out = socket.getOutputStream()
-                            out.write(buf, payloadOff, payloadLen)
-                            out.flush()
-                            onTrafficUpdate(payloadLen.toLong(), 0)
-                        } catch (e: Exception) {
-                            DebugLogger.e("Tunnel binary write error: ${e.message}", e)
-                            closeTunnel(sessionId)
-                        }
-                    }
+                    val session = activeTunnels[sessionId]
+                    if (session == null || session.socket.isClosed) return
+                    // The decoded payload is a fresh array (codec copies it),
+                    // so it can safely outlive this frame on the writer queue.
+                    enqueueWrite(sessionId, session, frame.payload)
                 }
                 MSG_TUNNEL_CLOSE -> {
                     DebugLogger.d("Binary tunnel close: $sessionId")
@@ -712,7 +867,7 @@ class RelayConnection(
                 else -> {
                     // Unknown binary message type — relay may add new
                     // types in future; ignore for forward compat.
-                    DebugLogger.d("Unknown binary frame type: $type")
+                    DebugLogger.d("Unknown binary frame type: ${frame.type}")
                 }
             }
         } catch (e: Exception) {
@@ -768,6 +923,8 @@ class RelayConnection(
         isConnected = false
         isReconnecting = false
         reconnectAttempt = 0
+
+        unregisterNetworkCallback()
 
         // Close all active tunnels
         activeTunnels.keys.toList().forEach { closeTunnel(it) }

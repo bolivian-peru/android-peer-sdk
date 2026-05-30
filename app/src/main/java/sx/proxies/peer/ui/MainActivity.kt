@@ -18,8 +18,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import sx.proxies.peer.ProxiesPeerSDK
-import sx.proxies.peer.databinding.ActivityMainBinding
-import sx.proxies.peer.databinding.DialogWalletConfigBinding
+import sx.proxies.peer.app.databinding.ActivityMainBinding
+import sx.proxies.peer.app.databinding.DialogWalletConfigBinding
 import sx.proxies.peer.util.DebugLogger
 import java.text.SimpleDateFormat
 import java.util.Date
