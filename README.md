@@ -4,7 +4,7 @@
 
 Android SDK for integrating bandwidth sharing into your app. Users earn money by sharing their unused mobile bandwidth while you earn proxy credits.
 
-**The Android SDK is one of several ways to join the Peer Network.** See [Other Integration Paths](#other-integration-paths) below for Node.js, Docker, and Linux options.
+**The Android SDK is one of several ways to join the Peer Network.** See [Other Integration Paths](#other-integration-paths) below for **Node.js, Go, Windows, and Docker** drop-in peers.
 
 ---
 
@@ -272,18 +272,27 @@ ProxiesPeerSDK.Config(
 
 The Android SDK is best for mobile apps. For other environments, use these alternatives:
 
-### Node.js / Linux / VPS
+### Drop-in reference SDKs (Node.js, Go, Windows)
 
-Run a lightweight peer script on any machine with Node.js 18+:
+Official, production-tested single-file peers. All speak the **identical relay
+protocol** as this Android SDK, so pick the one matching your stack and point it
+at your API key (from [farmer.proxies.sx](https://farmer.proxies.sx) > Account >
+API Keys, or client.proxies.sx).
 
-```bash
-# 1. Get your API key from farmer.proxies.sx > Account > API Keys
+| Language / Platform | Download | Run |
+|---|---|---|
+| **Node.js** (reference) | [reference-sdk.js](https://agents.proxies.sx/peer/reference-sdk.js) | `API_KEY=psx_... node reference-sdk.js` |
+| **Go** | [reference-sdk.go](https://agents.proxies.sx/peer/reference-sdk.go) + [go.mod](https://agents.proxies.sx/peer/go.mod) | `go run reference-sdk.go -key=psx_...` |
+| **Windows** (Node app, double-click) | [proxies-peer-windows.zip](https://agents.proxies.sx/peer/proxies-peer-windows.zip) | unzip → `setup.bat` → `start.bat` |
 
-# 2. Create peer.mjs and run it
-node peer.mjs
-```
+Each registers via `POST /v1/peer/agents/register`, connects to the nearest relay
+(geo-routed, with runtime `relay_redirect`), and forwards customer tunnels.
 
-The script registers via `POST /v1/peer/agents/register` with your `apiKey`, connects to `wss://relay.proxies.sx`, and handles proxy requests. Full integration guide at [farmer.proxies.sx](https://farmer.proxies.sx) > Peers > SDK Integration tab.
+**Porting to another language?** Two mistakes cause "intermittent auth" and "zero
+traffic": (1) put the JWT in the `Sec-WebSocket-Protocol` header as `token.<jwt>`,
+never in the URL; (2) on a `4001/4002` close, refresh the identity **once** for all
+sockets — never relaunch your whole socket pool (it leaks connections and dials
+with stale tokens). The Go and Node files document both inline.
 
 ### Docker
 
