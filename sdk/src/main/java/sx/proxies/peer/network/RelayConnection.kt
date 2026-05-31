@@ -3,6 +3,7 @@ package sx.proxies.peer.network
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.telephony.TelephonyManager
@@ -125,9 +126,11 @@ class RelayConnection(
     private class TunnelSession(
         val socket: Socket,
         val writes: Channel<ByteArray>,
-        val writerJob: Job,
     ) {
         @Volatile var lastActivityAt: Long = 0L
+        // Assigned immediately after construction; nullable only to break the
+        // construct-then-launch cycle. Cancelled in closeTunnel().
+        var writerJob: Job? = null
     }
 
     // WebSocket client. OkHttp 4.x auto-negotiates the permessage-deflate
@@ -184,8 +187,6 @@ class RelayConnection(
 
     // Active tunnel connections (sessionId -> session with its single writer)
     private val activeTunnels = ConcurrentHashMap<String, TunnelSession>()
-
-    private fun session(sessionId: String): TunnelSession? = activeTunnels[sessionId]
 
     fun connect() {
         // Recreate scope if it was cancelled by disconnect()
@@ -268,7 +269,7 @@ class RelayConnection(
         }
         try {
             val request = NetworkRequest.Builder()
-                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build()
             cm.registerNetworkCallback(request, callback)
             networkCallback = callback
@@ -650,13 +651,15 @@ class RelayConnection(
                 // enqueue here instead of each launching its own write, which
                 // would let writes for one session race and corrupt the stream.
                 val writes = Channel<ByteArray>(Channel.UNLIMITED)
-                val writerJob = launch(Dispatchers.IO) {
+                val tunnel = TunnelSession(socket, writes)
+                tunnel.lastActivityAt = System.currentTimeMillis()
+                tunnel.writerJob = launch(Dispatchers.IO) {
                     try {
                         val out = socket.getOutputStream()
                         for (chunk in writes) {
                             out.write(chunk)
                             out.flush()
-                            session(sessionId)?.lastActivityAt = System.currentTimeMillis()
+                            tunnel.lastActivityAt = System.currentTimeMillis()
                             onTrafficUpdate(chunk.size.toLong(), 0)
                         }
                     } catch (e: Exception) {
@@ -664,8 +667,8 @@ class RelayConnection(
                         closeTunnel(sessionId)
                     }
                 }
-                val tunnel = TunnelSession(socket, writes, writerJob)
-                tunnel.lastActivityAt = System.currentTimeMillis()
+                // Publish only after writerJob is set, so a concurrent
+                // closeTunnel() never sees a half-built session.
                 activeTunnels[sessionId] = tunnel
 
                 DebugLogger.i("Tunnel connected to $host:$port")
@@ -769,7 +772,7 @@ class RelayConnection(
             return
         }
         session.writes.close()
-        session.writerJob.cancel()
+        session.writerJob?.cancel()
         try {
             session.socket.close()
         } catch (e: Exception) {
