@@ -11,7 +11,7 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 > ## Current version: **v1.3.2**
 >
 > ```kotlin
-> implementation("com.github.bolivian-peru:android-peer-sdk:1.3.2")
+> implementation("com.github.bolivian-peru:android-peer-sdk:v1.3.2")
 > ```
 >
 > **v1.3.2 (2026-09-02) fixes three things every integrator hit:**
@@ -65,7 +65,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.3.2")
+    implementation("com.github.bolivian-peru:android-peer-sdk:v1.3.2")
 }
 ```
 
@@ -73,7 +73,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.3.2'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:v1.3.2'
 }
 ```
 
