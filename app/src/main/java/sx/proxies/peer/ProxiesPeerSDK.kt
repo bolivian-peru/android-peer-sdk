@@ -49,7 +49,7 @@ class ProxiesPeerSDK private constructor(
          * Tracked SDK version. Reported in registration and in the relay
          * `device_info` handshake. `internal` so RelayConnection can echo it.
          */
-        internal const val SDK_VERSION = "1.3.1"
+        internal const val SDK_VERSION = "1.3.2"
         // Development URLs (uncomment for local testing)
         // private const val DEFAULT_API_URL = "http://10.0.2.2:4500/v1"  // Android emulator localhost
         // private const val DEFAULT_RELAY_URL = "ws://10.0.2.2:8080"
@@ -147,6 +147,7 @@ class ProxiesPeerSDK private constructor(
 
     private var deviceId: String? = null
     private var deviceToken: String? = null
+    private var refreshTokenValue: String? = null
     // Geo-assigned relay from registration; persisted across launches. May be
     // further migrated at runtime via relay_redirect.
     private var assignedRelay: String? = null
@@ -163,6 +164,8 @@ class ProxiesPeerSDK private constructor(
     init {
         // Load persisted device ID and geo-assigned relay
         deviceId = prefs.getString("device_id", null)
+        deviceToken = prefs.getString("device_token", null)
+        refreshTokenValue = prefs.getString("refresh_token", null)
         assignedRelay = prefs.getString("relay_url", null)
     }
 
@@ -177,10 +180,12 @@ class ProxiesPeerSDK private constructor(
         scope.launch {
             try {
                 // Register or get token for device
-                if (deviceId == null || deviceToken == null) {
-                    registerDevice()
-                } else {
+                // A persisted refresh token means the device is known: refresh
+                // instead of re-registering on every launch (1.3.2).
+                if (deviceId != null && refreshTokenValue != null) {
                     refreshToken()
+                } else {
+                    registerDevice()
                 }
 
                 // Start foreground service
@@ -274,6 +279,7 @@ class ProxiesPeerSDK private constructor(
                 val request = Request.Builder()
                     .url("${config.apiUrl}/peer/earnings/${deviceId}")
                     .header("X-API-Key", apiKey)
+                    .apply { deviceToken?.let { header("Authorization", "Bearer $it") } }
                     .build()
 
                 val response = client.newCall(request).execute()
@@ -306,6 +312,7 @@ class ProxiesPeerSDK private constructor(
             try {
                 val request = Request.Builder()
                     .url("${config.apiUrl}/peer/devices/${deviceId}/earnings")
+                    .apply { deviceToken?.let { header("Authorization", "Bearer $it") } }
                     .build()
 
                 val response = client.newCall(request).execute()
@@ -372,6 +379,7 @@ class ProxiesPeerSDK private constructor(
                 val request = Request.Builder()
                     .url("${config.apiUrl}/peer/devices/${deviceId}/wallet")
                     .put(body)
+                    .apply { deviceToken?.let { header("Authorization", "Bearer $it") } }
                     .build()
 
                 val response = client.newCall(request).execute()
@@ -398,6 +406,7 @@ class ProxiesPeerSDK private constructor(
                 val request = Request.Builder()
                     .url("${config.apiUrl}/peer/devices/${deviceId}/request-payout")
                     .post(body)
+                    .apply { deviceToken?.let { header("Authorization", "Bearer $it") } }
                     .build()
 
                 val response = client.newCall(request).execute()
@@ -438,6 +447,11 @@ class ProxiesPeerSDK private constructor(
             Log.d(TAG, "Starting earnings auto-polling (60s interval)")
 
             while (isActive && isPollingEnabled) {
+                if (deviceId == null || deviceToken == null) {
+                    // Not registered yet: nothing to poll (avoids /devices/null/earnings)
+                    delay(5_000)
+                    continue
+                }
                 try {
                     // Use detailed earnings for full payout info
                     val detailedEarnings = getDetailedEarnings()
@@ -512,6 +526,7 @@ class ProxiesPeerSDK private constructor(
 
                 deviceId = responseJson?.get("device")?.asJsonObject?.get("deviceId")?.asString
                 deviceToken = responseJson?.get("token")?.asString
+                refreshTokenValue = responseJson?.get("refreshToken")?.asString
 
                 // Geo-assigned nearest relay for this device's source IP.
                 val relay = responseJson?.get("relay")?.asString
@@ -523,6 +538,8 @@ class ProxiesPeerSDK private constructor(
                 prefs.edit()
                     .putString("device_id", deviceId)
                     .putString("relay_url", assignedRelay)
+                    .putString("device_token", deviceToken)
+                    .putString("refresh_token", refreshTokenValue)
                     .apply()
 
                 Log.d(TAG, "Device registered: $deviceId (relay: ${assignedRelay ?: DEFAULT_RELAY_URL})")
@@ -535,8 +552,20 @@ class ProxiesPeerSDK private constructor(
     private suspend fun refreshToken() {
         Log.d(TAG, "Refreshing token for device: $deviceId")
 
+        // The backend endpoint is POST /peer/token/{id}/refresh with the refresh
+        // token from registration. Until 1.3.2 the SDK issued a bare GET to
+        // /peer/token/{id}, which does not exist (404) and forced a fresh
+        // registration on every launch.
+        val refresh = refreshTokenValue
+        if (refresh == null) {
+            registerDevice()
+            return
+        }
+        val body = gson.toJson(mapOf("refreshToken" to refresh))
+            .toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
-            .url("${config.apiUrl}/peer/token/$deviceId")
+            .url("${config.apiUrl}/peer/token/$deviceId/refresh")
+            .post(body)
             .build()
 
         val response = client.newCall(request).execute()
@@ -545,10 +574,11 @@ class ProxiesPeerSDK private constructor(
                 val responseBody = resp.body?.string()
                 val responseJson = gson.fromJson(responseBody, JsonObject::class.java)
                 deviceToken = responseJson?.get("token")?.asString
+                prefs.edit().putString("device_token", deviceToken).apply()
                 Log.d(TAG, "Token refreshed")
-            } else if (resp.code == 404) {
-                // Device not found, re-register
-                deviceId = null
+            } else if (resp.code == 401 || resp.code == 404) {
+                // Refresh token rejected or device gone: re-register
+                refreshTokenValue = null
                 registerDevice()
             } else {
                 throw Exception("Token refresh failed: ${resp.code}")

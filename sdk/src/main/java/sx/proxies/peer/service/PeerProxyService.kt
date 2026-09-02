@@ -13,6 +13,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import sx.proxies.peer.ProxiesPeerSDK
 import sx.proxies.peer.network.RelayConnection
 import sx.proxies.peer.network.LocalProxyServer
 
@@ -102,12 +103,16 @@ class PeerProxyService : Service() {
                     onConnected = { deviceId ->
                         isConnected = true
                         updateNotification("Connected as $deviceId")
+                        // Until 1.3.2 nothing ever moved the SDK off CONNECTING, so every
+                        // integrator UI showed "Connecting" while the device was serving.
+                        runCatching { ProxiesPeerSDK.getInstance().updateStatus(ProxiesPeerSDK.Status.CONNECTED) }
                         // Start local proxy server
                         startLocalProxy()
                     },
                     onDisconnected = {
                         isConnected = false
-                        updateNotification("Disconnected")
+                        updateNotification("Disconnected - reconnecting")
+                        runCatching { ProxiesPeerSDK.getInstance().updateStatus(ProxiesPeerSDK.Status.CONNECTING) }
                     },
                     onProxyRequest = { request ->
                         handleProxyRequest(request)

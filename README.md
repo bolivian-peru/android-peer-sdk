@@ -8,13 +8,19 @@ Android SDK for integrating bandwidth sharing into your app. Users earn money by
 
 ---
 
-> ## Current version: **v1.3.1**
+> ## Current version: **v1.3.2**
 >
 > ```kotlin
-> implementation("com.github.bolivian-peru:android-peer-sdk:1.3.1")
+> implementation("com.github.bolivian-peru:android-peer-sdk:1.3.2")
 > ```
 >
-> v1.3.1 delivers fast, full-throughput bandwidth sharing. Four things make it fast:
+> **v1.3.2 (2026-09-02) fixes three things every integrator hit:**
+>
+> - **Status never reached `CONNECTED`.** The library set `CONNECTING` on `start()` and nothing moved it afterwards, so every app built on `onStatusChange` showed "Connecting…" while the device was registered, probed and serving traffic. The foreground service now reports `CONNECTED` when the relay socket opens and `CONNECTING` again while it reconnects.
+> - **Earnings, wallet and payout calls were rejected (401).** Those endpoints require the device JWT issued at registration; the library sent only the farmer API key, or nothing, so `getEarnings()` / `getDetailedEarnings()` returned zeros. They now send `Authorization: Bearer <device token>`. (The backend also accepts the registering `X-API-Key` for the device it registered, so 1.3.1 apps get real numbers on manual refresh without an update.)
+> - **Token refresh hit a route that does not exist.** The library issued `GET /peer/token/{id}` (404) and re-registered on every launch. It now stores the refresh token and calls `POST /peer/token/{id}/refresh`, re-registering only when the backend rejects it. Earnings polling also waits until the device is registered instead of calling `/devices/null/earnings`.
+>
+> v1.3.1 delivered fast, full-throughput bandwidth sharing. Four things make it fast:
 >
 > - **Full-throughput tunnels** — the SDK signals `tunnel_connected` the instant its outbound socket opens, so the relay streams the customer's traffic immediately instead of stalling on the TLS handshake. This is what lets a device serve traffic at its real uplink speed.
 > - **Nearest-relay routing** — the `/peer/register` response carries a `relay` field; the SDK connects to the geographically nearest relay (US/LATAM → `wss://relay-us.proxies.sx`, everyone else → `wss://relay.proxies.sx`) and honors runtime `relay_redirect`, so no device tunnels across an ocean. Guards: only `*.proxies.sx` wss targets are honored, a 60s anti-flap interval applies, and an explicit `Config.relayUrl` pin disables redirects.
@@ -59,7 +65,7 @@ In your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.github.bolivian-peru:android-peer-sdk:1.3.1")
+    implementation("com.github.bolivian-peru:android-peer-sdk:1.3.2")
 }
 ```
 
@@ -67,7 +73,7 @@ Or in Groovy:
 
 ```groovy
 dependencies {
-    implementation 'com.github.bolivian-peru:android-peer-sdk:1.3.1'
+    implementation 'com.github.bolivian-peru:android-peer-sdk:1.3.2'
 }
 ```
 
@@ -334,6 +340,14 @@ See the `/app` module for a complete sample application demonstrating:
 If you use ProGuard/R8, the SDK includes consumer ProGuard rules automatically. No additional configuration needed.
 
 ## Troubleshooting
+
+### Status stays "Connecting…" although the dashboard shows the device online
+
+Your app is built against **1.3.1 or older**: that library never emitted `CONNECTED`. Rebuild against 1.3.2 (no code change on your side). The device itself was working the whole time.
+
+### Earnings show $0.00 in the app but not in the dashboard
+
+Same cause and same fix: the 1.3.1 library did not send the device token on the earnings endpoints. Until you rebuild, tapping a manual refresh that calls `getEarnings()` returns real numbers on backends deployed after 2026-09-02.
 
 ### "Relay connection failed"
 
