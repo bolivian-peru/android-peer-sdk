@@ -157,6 +157,9 @@ class PeerProxyService : Service() {
     }
 
     private fun startLocalProxy() {
+        // A reconnect reuses the service's listener. Replacing it would lose the
+        // only reference that stopProxy needs to release the already-bound port.
+        if (localProxyServer != null) return
         // Local HTTP proxy server that forwards to relay
         localProxyServer = LocalProxyServer(
             port = 8888,
@@ -354,6 +357,8 @@ class PeerProxyService : Service() {
 
     override fun onDestroy() {
         stopProxy()
+        // OS service destruction ends this connection, but is not a user opt-out.
+        runCatching { ProxiesPeerSDK.getInstance().updateStatus(ProxiesPeerSDK.Status.STOPPED) }
         releaseWakeLock()
         serviceScope.cancel()
         super.onDestroy()
