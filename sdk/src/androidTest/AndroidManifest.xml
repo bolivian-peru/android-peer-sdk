@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application android:usesCleartextTraffic="true" android:icon="@android:drawable/ic_dialog_info">
+        <activity android:name="sx.proxies.peer.lifecycle.LifecycleTestActivity"
+            android:exported="false" />
+    </application>
+</manifest>
