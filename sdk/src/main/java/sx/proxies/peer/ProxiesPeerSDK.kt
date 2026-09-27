@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaType
@@ -166,6 +168,11 @@ class ProxiesPeerSDK private constructor(
     // relay may further migrate the device at runtime via relay_redirect.
     private var assignedRelay: String? = null
     private var currentStatus = Status.STOPPED
+    private val identityMutex = Mutex()
+    private val sharingLock = Any()
+    @Volatile private var sharingRequested = false
+    private var sharingGeneration = 0L
+    private var startupJob: Job? = null
 
     // Earnings auto-polling
     private var earningsPollingJob: Job? = null
@@ -192,18 +199,29 @@ class ProxiesPeerSDK private constructor(
      */
     fun start() {
         Log.d(TAG, "Starting SDK")
+        val generation = synchronized(sharingLock) {
+            sharingRequested = true
+            sharingGeneration += 1
+            startupJob?.cancel()
+            sharingGeneration
+        }
         updateStatus(Status.CONNECTING)
 
-        scope.launch {
+        startupJob = scope.launch {
             try {
                 // Register or get token for device
                 // A persisted refresh token means the device is known: refresh
                 // instead of re-registering on every launch (1.3.2).
-                if (deviceId != null && refreshTokenValue != null) {
-                    refreshToken()
-                } else {
-                    registerDevice()
+                identityMutex.withLock {
+                    if (!sharingRequested || generation != sharingGeneration) return@launch
+                    ensureActive()
+                    if (deviceId != null && refreshTokenValue != null) {
+                        refreshToken()
+                    } else {
+                        registerDevice()
+                    }
                 }
+                ensureActive()
 
                 // Start foreground service
                 val token = deviceToken
@@ -213,21 +231,21 @@ class ProxiesPeerSDK private constructor(
                     // tells the connection to ignore runtime relay redirects.
                     val relay = config.relayUrl ?: assignedRelay ?: DEFAULT_RELAY_URL
                     val relayPinned = config.relayUrl != null
-                    PeerProxyService.start(
-                        context,
-                        token,
-                        relay,
-                        relayPinned
-                    )
+                    synchronized(sharingLock) {
+                        if (!sharingRequested || generation != sharingGeneration) return@launch
+                        PeerProxyService.start(context, token, relay, relayPinned)
+                    }
                     // Note: Status will be CONNECTING until relay actually connects
                     // The service will update status via callbacks
                 } else {
                     Log.e(TAG, "No device token available")
                     updateStatus(Status.ERROR)
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start", e)
-                updateStatus(Status.ERROR)
+                if (generation == sharingGeneration) updateStatus(Status.ERROR)
             }
         }
 
@@ -241,12 +259,10 @@ class ProxiesPeerSDK private constructor(
     fun stop() {
         Log.d(TAG, "Stopping SDK")
 
-        // Stop earnings auto-polling
-        stopEarningsPolling()
-
-        // Stop foreground service
-        PeerProxyService.stop(context)
-        updateStatus(Status.STOPPED)
+        synchronized(sharingLock) {
+            sharingStopped()
+            PeerProxyService.stop(context)
+        }
     }
 
     /**
@@ -517,8 +533,13 @@ class ProxiesPeerSDK private constructor(
     private suspend fun registerDevice() {
         Log.d(TAG, "Registering device")
 
+        // Retain the registered identity even if ANDROID_ID later changes or is unavailable.
+        val stableDeviceId = deviceId ?: getUniqueDeviceId().also {
+            deviceId = it
+            prefs.edit().putString("device_id", it).apply()
+        }
         val deviceInfo = mapOf(
-            "deviceId" to getUniqueDeviceId(),
+            "deviceId" to stableDeviceId,
             "model" to android.os.Build.MODEL,
             "osVersion" to "Android ${android.os.Build.VERSION.RELEASE}",
             "appVersion" to getAppVersion(),
@@ -595,7 +616,12 @@ class ProxiesPeerSDK private constructor(
                 val responseBody = resp.body?.string()
                 val responseJson = gson.fromJson(responseBody, JsonObject::class.java)
                 deviceToken = responseJson?.get("token")?.asString
-                prefs.edit().putString("device_token", deviceToken).apply()
+                val rotatedRefresh = responseJson?.get("refreshToken")?.asString
+                if (!rotatedRefresh.isNullOrBlank()) refreshTokenValue = rotatedRefresh
+                prefs.edit()
+                    .putString("device_token", deviceToken)
+                    .putString("refresh_token", refreshTokenValue)
+                    .apply()
                 Log.d(TAG, "Token refreshed")
             } else if (resp.code == 401 || resp.code == 404) {
                 // Refresh token rejected or device gone: re-register
@@ -607,7 +633,25 @@ class ProxiesPeerSDK private constructor(
         }
     }
 
+    internal suspend fun refreshRelayToken(): String? = identityMutex.withLock {
+        if (!sharingRequested) return@withLock null
+        refreshToken()
+        currentCoroutineContext().ensureActive()
+        if (sharingRequested) deviceToken else null
+    }
+
+    internal fun sharingStopped() {
+        synchronized(sharingLock) {
+            sharingRequested = false
+            sharingGeneration += 1
+            startupJob?.cancel()
+        }
+        stopEarningsPolling()
+        updateStatus(Status.STOPPED)
+    }
+
     internal fun updateStatus(status: Status) {
+        if (!sharingRequested && status != Status.STOPPED) return
         currentStatus = status
         config.onStatusChange?.invoke(status)
     }
