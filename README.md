@@ -4,7 +4,7 @@
 
 Android SDK for integrating bandwidth sharing into your app. Users earn money by sharing their unused mobile bandwidth while you earn proxy credits.
 
-**The Android SDK is one of several ways to join the Peer Network.** See [Other Integration Paths](#other-integration-paths) below for **Node.js, Go, Windows, and Docker** drop-in peers.
+**The Android SDK is one of several ways to join the Peer Network.** See [Other Integration Paths](#other-integration-paths) below for Node.js, Go/Linux and Windows clients, including notes for container deployments.
 
 ---
 
@@ -152,11 +152,11 @@ Once your device is connected, manage it from the farmer dashboard:
 | Uptime | Minimum 1 hour online |
 | Quality | Score must be >= 50/100 |
 
-## IP Rotation (planned — not in v1.1.x)
+## IP rotation support in v1.3.2
 
-SDK-side IP rotation via accessibility-service-driven airplane-mode toggle is on the roadmap but **does not ship in v1.1.x**. The classes `AirplaneModeAccessibilityService`, `IPRotationManager` and the methods `sdk.rotateIP()`, `sdk.isIPRotationAvailable()`, `sdk.rotateIPAsync()`, `sdk.openIPRotationSettings()` are not present in the artifact — earlier README revisions documented them in error.
+The v1.3.2 library does not implement SDK-side airplane-mode rotation. The classes `AirplaneModeAccessibilityService`, `IPRotationManager` and the methods `sdk.rotateIP()`, `sdk.isIPRotationAvailable()`, `sdk.rotateIPAsync()`, `sdk.openIPRotationSettings()` are not present in the artifact — earlier README revisions documented them in error.
 
-The backend route `POST /v1/peer/devices/:id/rotate` exists but returns HTTP 501 for v1.1.x clients. The feature is tracked under Phase 3b of the SDK production-readiness plan and will land in a future major version.
+Use the methods shipped in the tagged Android library. For other clients, check the rotation capability documented for that device type.
 
 ## Required Permissions
 
@@ -278,41 +278,17 @@ ProxiesPeerSDK.Config(
 
 The Android SDK is best for mobile apps. For other environments, use these alternatives:
 
-### Drop-in reference SDKs (Node.js, Go, Windows)
+### Other peer clients
 
-Official, production-tested single-file peers. All speak the **identical relay
-protocol** as this Android SDK, so pick the one matching your stack and point it
-at your API key (from [farmer.proxies.sx](https://farmer.proxies.sx) > Account >
-API Keys, or client.proxies.sx).
+Choose the [Android integration guide](https://agents.proxies.sx/peer/skill.md) for the SDK in this repository. Other operating systems have independently versioned clients and release checks.
 
-| Language / Platform | Download | Run |
-|---|---|---|
-| **Node.js** (reference) | [reference-sdk.js](https://agents.proxies.sx/peer/reference-sdk.js) | `API_KEY=psx_... node reference-sdk.js` |
-| **Go** | [reference-sdk.go](https://agents.proxies.sx/peer/reference-sdk.go) + [go.mod](https://agents.proxies.sx/peer/go.mod) | `go run reference-sdk.go -key=psx_...` |
-| **Windows** (Node app, double-click) | [proxies-peer-windows.zip](https://agents.proxies.sx/peer/proxies-peer-windows.zip) | unzip → `setup.bat` → `start.bat` |
+| Client | Installation |
+|---|---|
+| Node.js | Use the reference client linked from the [peer installation guide](https://agents.proxies.sx/peer/skill.md). |
+| Go / Linux | The [Linux guide](https://agents.proxies.sx/peer/go/) covers architecture-specific packages, checksums, the service installer and source builds. |
+| Windows | The [peer installation guide](https://agents.proxies.sx/peer/skill.md) links to the versioned Windows Node ZIP and checksum. Extract it and follow its setup instructions. |
 
-Each registers via `POST /v1/peer/agents/register`, connects to the nearest relay
-(geo-routed, with runtime `relay_redirect`), and forwards customer tunnels.
-
-**Porting to another language?** Two mistakes cause "intermittent auth" and "zero
-traffic": (1) put the JWT in the `Sec-WebSocket-Protocol` header as `token.<jwt>`,
-never in the URL; (2) on a `4001/4002` close, refresh the identity **once** for all
-sockets — never relaunch your whole socket pool (it leaks connections and dials
-with stale tokens). The Go and Node files document both inline.
-
-### Docker
-
-Run a peer node as a Docker container:
-
-```bash
-docker run -d --name proxies-peer \
-  -e DEVICE_NAME=my-docker-peer \
-  -e API_KEY=psx_your_key \
-  --restart unless-stopped \
-  node:18-slim node -e "$(curl -s https://agents.proxies.sx/peer/skill.md | ...)"
-```
-
-Or use the Node.js script in a Dockerfile. See the integration guide for the full peer.mjs script.
+For container deployments, build from a documented reference client. Configure the SDK key at runtime and preserve the saved device identity across container restarts. A successful relay connection confirms admission. Inventory and earnings depend on listing and customer traffic.
 
 ### AI Agents (Claude, GPT, Custom)
 
