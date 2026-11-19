@@ -28,6 +28,7 @@ class PeerProxyService : Service() {
         const val EXTRA_DEVICE_TOKEN = "device_token"
         const val EXTRA_RELAY_URL = "relay_url"
         const val EXTRA_RELAY_PINNED = "relay_pinned"
+        private const val EXTRA_STOP_RECORDED = "stop_recorded"
 
         fun start(context: Context, deviceToken: String, relayUrl: String, relayPinned: Boolean = false) {
             val intent = Intent(context, PeerProxyService::class.java).apply {
@@ -46,6 +47,7 @@ class PeerProxyService : Service() {
         fun stop(context: Context) {
             val intent = Intent(context, PeerProxyService::class.java).apply {
                 action = ACTION_STOP
+                putExtra(EXTRA_STOP_RECORDED, true)
             }
             context.startService(intent)
         }
@@ -53,6 +55,8 @@ class PeerProxyService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var relayConnection: RelayConnection? = null
+    private val relayLifecycleLock = Any()
+    private var relayGeneration = 0L
     private var localProxyServer: LocalProxyServer? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -76,6 +80,11 @@ class PeerProxyService : Service() {
                 return START_STICKY
             }
             ACTION_STOP -> {
+                // The SDK records consent before sending its stop intent. A notification stop
+                // must record it here; an older queued stop must not cancel a newer SDK start.
+                if (!intent.getBooleanExtra(EXTRA_STOP_RECORDED, false)) {
+                    runCatching { ProxiesPeerSDK.getInstance().sharingStopped() }
+                }
                 stopProxy()
                 stopSelf()
                 return START_NOT_STICKY
@@ -92,15 +101,28 @@ class PeerProxyService : Service() {
         // Start foreground immediately
         startForeground(NOTIFICATION_ID, createNotification("Connecting..."))
 
-        serviceScope.launch {
-            try {
-                // Initialize relay connection
-                relayConnection = RelayConnection(
-                    context = applicationContext,
-                    relayUrl = relayUrl,
-                    relayPinned = relayPinned,
-                    token = token,
-                    onConnected = { deviceId ->
+        val previous = synchronized(relayLifecycleLock) {
+            relayGeneration += 1
+            relayConnection.also { relayConnection = null }
+        }
+        previous?.disconnect()
+        val generation = relayGeneration
+        try {
+            // Initialize relay connection
+            relayConnection = RelayConnection(
+                context = applicationContext,
+                relayUrl = relayUrl,
+                relayPinned = relayPinned,
+                token = token,
+                refreshToken = { ProxiesPeerSDK.getInstance().refreshRelayToken() },
+                onAuthenticationFailure = {
+                    withCurrentRelay(generation) {
+                        updateNotification("Authentication failed - restart sharing to retry")
+                        runCatching { ProxiesPeerSDK.getInstance().updateStatus(ProxiesPeerSDK.Status.ERROR) }
+                    }
+                },
+                onConnected = { deviceId ->
+                    withCurrentRelay(generation) {
                         isConnected = true
                         updateNotification("Connected as $deviceId")
                         // Until 1.3.2 nothing ever moved the SDK off CONNECTING, so every
@@ -108,27 +130,29 @@ class PeerProxyService : Service() {
                         runCatching { ProxiesPeerSDK.getInstance().updateStatus(ProxiesPeerSDK.Status.CONNECTED) }
                         // Start local proxy server
                         startLocalProxy()
-                    },
-                    onDisconnected = {
+                    }
+                },
+                onDisconnected = {
+                    withCurrentRelay(generation) {
                         isConnected = false
                         updateNotification("Disconnected - reconnecting")
                         runCatching { ProxiesPeerSDK.getInstance().updateStatus(ProxiesPeerSDK.Status.CONNECTING) }
-                    },
-                    onProxyRequest = { request ->
-                        handleProxyRequest(request)
-                    },
-                    onTrafficUpdate = { bytesIn, bytesOut ->
-                        totalBytesIn += bytesIn
-                        totalBytesOut += bytesOut
-                        updateNotificationStats()
                     }
-                )
+                },
+                onProxyRequest = { request ->
+                    handleProxyRequest(request)
+                },
+                onTrafficUpdate = { bytesIn, bytesOut ->
+                    totalBytesIn += bytesIn
+                    totalBytesOut += bytesOut
+                    updateNotificationStats()
+                }
+            )
 
-                relayConnection?.connect()
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start proxy", e)
-                updateNotification("Connection failed: ${e.message}")
-            }
+            relayConnection?.connect()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start proxy", e)
+            updateNotification("Connection failed: ${e.message}")
         }
     }
 
@@ -218,13 +242,26 @@ class PeerProxyService : Service() {
         }
     }
 
+    private fun withCurrentRelay(generation: Long, action: () -> Unit) {
+        synchronized(relayLifecycleLock) {
+            if (relayGeneration == generation && relayConnection != null) action()
+        }
+    }
+
     private fun stopProxy() {
         Log.d(TAG, "Stopping proxy service")
-        relayConnection?.disconnect()
-        relayConnection = null
-        localProxyServer?.stop()
-        localProxyServer = null
-        isConnected = false
+        val previous = synchronized(relayLifecycleLock) {
+            relayGeneration += 1
+            val old = relayConnection
+            relayConnection = null
+            localProxyServer?.stop()
+            localProxyServer = null
+            isConnected = false
+            old
+        }
+        // Do not hold the service lock while entering the connection lock: callbacks
+        // use the opposite order and are already fenced out by the generation above.
+        previous?.disconnect()
     }
 
     private fun createNotificationChannel() {

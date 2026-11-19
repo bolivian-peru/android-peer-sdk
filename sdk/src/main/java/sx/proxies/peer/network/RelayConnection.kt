@@ -21,6 +21,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 class RelayConnection(
     private val context: Context,
@@ -29,11 +30,13 @@ class RelayConnection(
     private var relayUrl: String,
     // Operator pinned a relay in Config -> ignore all runtime redirects.
     private val relayPinned: Boolean = false,
-    private val token: String,
+    token: String,
     private val onConnected: (deviceId: String) -> Unit,
     private val onDisconnected: () -> Unit,
     private val onProxyRequest: suspend (ProxyRequest) -> ProxyResponse,
-    private val onTrafficUpdate: (bytesIn: Long, bytesOut: Long) -> Unit
+    private val onTrafficUpdate: (bytesIn: Long, bytesOut: Long) -> Unit,
+    private val refreshToken: (suspend () -> String?)? = null,
+    private val onAuthenticationFailure: () -> Unit = {},
 ) {
     companion object {
         private const val TAG = "RelayConnection"
@@ -119,7 +122,11 @@ class RelayConnection(
     @Volatile private var isConnected = false
     @Volatile private var shouldReconnect = true
     @Volatile private var isReconnecting = false
+    private val lifecycleLock = Any()
     private var reconnectAttempt = 0
+    private val connectionGeneration = AtomicLong()
+    private val authentication = RelayAuthRecovery(token) { refreshToken?.invoke() }
+    private var heartbeatJob: Job? = null
     private var publicIp: String = ""
     @Volatile private var lastRedirectAt = 0L
 
@@ -137,63 +144,84 @@ class RelayConnection(
     private val activeTunnels = ConcurrentHashMap<String, Socket>()
 
     fun connect() {
-        // Recreate scope if it was cancelled by disconnect()
-        if (!scope.isActive) {
-            scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-        }
-        // Close any existing connection before reconnecting
+        if (!shouldReconnect) return
+        val generation = connectionGeneration.incrementAndGet()
         webSocket?.close(1000, "Reconnecting")
         webSocket = null
         isReconnecting = false
 
-        DebugLogger.d("Connecting to relay: ${relayUrl.take(30)}...")
+        scope.launch {
+            try {
+                val currentToken = authentication.tokenForConnection()
+                if (!shouldReconnect || connectionGeneration.get() != generation) return@launch
+                if (currentToken == null) {
+                    shouldReconnect = false
+                    authentication.stop()
+                    onAuthenticationFailure()
+                    return@launch
+                }
+                openConnection(currentToken, generation)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                DebugLogger.w("Credential refresh failed; retrying with bounded backoff")
+                if (shouldReconnect && connectionGeneration.get() == generation) handleDisconnect()
+            }
+        }
+    }
 
+    private fun openConnection(token: String, generation: Long) {
+        DebugLogger.d("Connecting to relay: ${relayUrl.take(30)}...")
         val request = Request.Builder()
             .url(relayUrl)
             .header("Sec-WebSocket-Protocol", "token.$token")
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                DebugLogger.i("WebSocket connected!")
-                isConnected = true
-                reconnectAttempt = 0  // Reset on successful connection
+            private fun current() = shouldReconnect && connectionGeneration.get() == generation
 
-                // Fetch public IP first, then send device info
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!current()) { webSocket.cancel(); return }
+                // Transport open does not prove that the relay accepted the token.
                 scope.launch {
                     fetchPublicIp()
-                    sendDeviceInfo()
-                    startHeartbeat()
+                    if (current()) sendDeviceInfo()
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                handleMessage(text)
+                synchronized(lifecycleLock) {
+                    if (current()) handleMessage(text)
+                }
             }
 
-            // Binary frames carry tunnel_data on the hot path (v1.2.0+).
-            // Control messages (tunnel_connect, device_info, etc.) still
-            // arrive as text, so this only fires for the perf-critical
-            // bytes-flowing path. We dispatch to the binary handler
-            // without any JSON parse or base64 decode.
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                handleBinaryMessage(bytes)
+                synchronized(lifecycleLock) {
+                    if (current()) handleBinaryMessage(bytes)
+                }
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                DebugLogger.d("WebSocket closing: $code - $reason")
+                webSocket.close(code, reason)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                DebugLogger.d("WebSocket closed: $code - $reason")
-                handleDisconnect()
+                synchronized(lifecycleLock) {
+                    if (!current()) return
+                    if (code == 4001 || code == 4002) authentication.rejected()
+                    handleDisconnect()
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                DebugLogger.e("WebSocket failure: ${t.message}", t)
-                handleDisconnect()
+                synchronized(lifecycleLock) {
+                    if (!current()) return
+                    if (response?.code == 401 || response?.code == 403) authentication.rejected()
+                    handleDisconnect()
+                }
             }
         })
+        if (!shouldReconnect || connectionGeneration.get() != generation) webSocket?.cancel()
     }
 
     private suspend fun fetchPublicIp() {
@@ -251,7 +279,13 @@ class RelayConnection(
 
             when (type) {
                 "connected" -> {
-                    deviceId = payload?.get("deviceId")?.asString
+                    val acceptedDeviceId = payload?.get("deviceId")?.asString
+                    if (acceptedDeviceId.isNullOrBlank() || isConnected) return
+                    deviceId = acceptedDeviceId
+                    isConnected = true
+                    reconnectAttempt = 0
+                    authentication.authenticated()
+                    startHeartbeat()
                     // Relay has processed our `device_info` advertising
                     // `protocol: "binary-v1"` — safe to start sending
                     // tunnel_data as binary frames. Until this flips,
@@ -730,7 +764,8 @@ class RelayConnection(
     }
 
     private fun startHeartbeat() {
-        scope.launch {
+        heartbeatJob?.cancel()
+        heartbeatJob = scope.launch {
             while (isConnected) {
                 delay(HEARTBEAT_INTERVAL)
                 if (isConnected) {
@@ -742,6 +777,7 @@ class RelayConnection(
 
     private fun handleDisconnect() {
         isConnected = false
+        heartbeatJob?.cancel()
         // Force a clean re-handshake of the binary protocol on reconnect —
         // we'd never want to send binary frames to a relay that hasn't
         // ack'd our `device_info` yet on the new session.
@@ -773,17 +809,22 @@ class RelayConnection(
     }
 
     fun disconnect() {
-        shouldReconnect = false
-        isConnected = false
-        isReconnecting = false
-        reconnectAttempt = 0
+        synchronized(lifecycleLock) {
+            shouldReconnect = false
+            connectionGeneration.incrementAndGet()
+            authentication.stop()
+            heartbeatJob?.cancel()
+            isConnected = false
+            isReconnecting = false
+            reconnectAttempt = 0
 
-        // Close all active tunnels
-        activeTunnels.keys.toList().forEach { closeTunnel(it) }
+            // Close all active tunnels
+            activeTunnels.keys.toList().forEach { closeTunnel(it) }
 
-        webSocket?.close(1000, "User disconnected")
-        webSocket = null
-        scope.cancel()
+            webSocket?.close(1000, "User disconnected")
+            webSocket = null
+            scope.cancel()
+        }
     }
 
     suspend fun sendHttpRequest(
